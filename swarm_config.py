@@ -91,6 +91,40 @@ SWARM = {
     4: NodeCfg(4, 2, 2, (-8.0, +8.0, -2.0), 4),
 }
 
+# ------------------------------------------------------------------- formations
+# Each formation is a { node_id: offset } map, offset in the SAME (fwd, right,
+# down) parent-body-frame convention as NodeCfg.offset above -- it is applied
+# to the same follow tree (SWARM's level/parent columns don't change), so
+# switching formation only ever changes where a node sits relative to its
+# existing parent, never who its parent is.
+#
+# NodeCfg.offset holds "wedge" (the shape the swarm boots into); FORMATIONS
+# lets a running swarm switch shape via swarm_cli.py's FORMATION command --
+# see leader_commands.py and fly_follower() in swarm_node.py.
+FORMATIONS = {
+    "wedge": {nid: n.offset for nid, n in SWARM.items()},
+    # single file behind the leader: 1,2 tuck directly in behind 0, and their
+    # children (3, 4) tuck in behind them in turn -- the chain composes into
+    # one straight line along the leader's forward axis.
+    "line-vertical": {
+        0: (0.0, 0.0, 0.0),
+        1: (-8.0, 0.0, -2.0),
+        2: (-16.0, 0.0, -2.0),
+        3: (-16.0, 0.0, 0.0),
+        4: (-16.0, 0.0, 0.0),
+    },
+    # abreast of the leader, spread along its right axis: 1,2 sit either side
+    # of 0 and 3,4 extend the line further out past 1,2.
+    "line-horizontal": {
+        0: (0.0, 0.0, 0.0),
+        1: (-8.0, -8.0, -2.0),
+        2: (-8.0, +8.0, -2.0),
+        3: (0.0, -8.0, 0.0),
+        4: (0.0, +8.0, 0.0),
+    },
+}
+DEFAULT_FORMATION = "wedge"
+
 # Leader path, in the common swarm frame: (north, east, down) [m].
 LEADER_PATH = [
     (0.0, 0.0, -20.0),

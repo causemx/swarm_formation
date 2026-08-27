@@ -18,6 +18,7 @@ socket on cfg.CMD_PORT.
     TAKEOFF args (optional): {"alt": float}                  # metres AGL
     GOTO args (one of):      {"n": float, "e": float, "d": float}   # swarm frame
                               {"lat": float, "lon": float, "alt": float}
+    FORMATION args:          {"name": str}              # key in cfg.FORMATIONS
 
 Every ack is sent as soon as the command is validated and accepted or
 rejected -- GOTO and TAKEOFF do not wait for arrival before acking. The
@@ -38,7 +39,7 @@ import swarm_config as cfg
 from formation import clamp_xyz
 from geo import geodetic_to_ned
 
-VALID_CMDS = {"ARM", "TAKEOFF", "GOTO", "HOLD", "LAND"}
+VALID_CMDS = {"ARM", "TAKEOFF", "GOTO", "HOLD", "LAND", "FORMATION"}
 
 
 # ============================================================== wire protocol
@@ -88,10 +89,11 @@ class LeaderCommander:
     drives the continuous setpoint stream offboard mode requires.
     """
 
-    def __init__(self, drone, v, tf, log):
+    def __init__(self, drone, v, tf, formation, log):
         self.drone = drone
         self.v = v
         self.tf = tf          # (n, e, d) local -> swarm frame offset
+        self.formation = formation   # ["name"], shared with publisher() -- see swarm_node.py
         self.log = log
         self.state = "disarmed"   # disarmed -> armed -> climbing -> flying -> landing
         self.target = None    # (n, e, d) in swarm frame; set once armed
@@ -168,6 +170,16 @@ class LeaderCommander:
         self.log("holding")
         return "accepted", "holding at current position"
 
+    async def _cmd_formation(self, args):
+        name = args.get("name")
+        if name not in cfg.FORMATIONS:
+            return "rejected", f"unknown formation {name!r}; known: {sorted(cfg.FORMATIONS)}"
+        if name == self.formation[0]:
+            return "accepted", f"already in {name}"
+        self.formation[0] = name  # picked up by publisher() and cascaded to children's "fm"
+        self.log(f"formation -> {name}")
+        return "accepted", f"switching to {name}"
+
     async def _cmd_land(self, args):
         if self.state not in ("armed", "climbing", "flying"):
             return "rejected", f"nothing to land from state {self.state}"
@@ -224,16 +236,16 @@ class LeaderCommander:
 
 
 # ============================================================ leader run loop
-async def run_leader_commands(drone, v, tf, phase, log):
+async def run_leader_commands(drone, v, tf, phase, formation, log):
     """
     Command-driven replacement for fly_leader(): waits for ARM/TAKEOFF over
-    the command link, then holds/navigates per GOTO/HOLD until LAND is
-    issued. Mirrors fly_leader()'s own tail (publish phase[0]="land" and hold
-    position for 3s so children reliably see it in a broadcast packet) so
-    landing cascades down the tree exactly the same way in both modes; the
+    the command link, then holds/navigates per GOTO/HOLD/FORMATION until LAND
+    is issued. Mirrors fly_leader()'s own tail (publish phase[0]="land" and
+    hold position for 3s so children reliably see it in a broadcast packet)
+    so landing cascades down the tree exactly the same way in both modes; the
     caller's run()/finally still does the actual PX4 offboard.stop()/land().
     """
-    commander = LeaderCommander(drone, v, tf, log)
+    commander = LeaderCommander(drone, v, tf, formation, log)
     await open_command_link(commander)
     log(f"command interface listening on 0.0.0.0:{cfg.CMD_PORT} -- waiting for ARM")
 

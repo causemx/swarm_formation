@@ -1,0 +1,12 @@
+layout {
+    tab name="6 Horizontal Panes" {
+        pane split_direction="Horizontal" {
+            pane
+            pane
+            pane
+            pane
+            pane
+            pane
+        }
+    }
+}

@@ -20,7 +20,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 for ((i = 0; i < N; i++)); do
-    python3 swarm_node.py --id "$i" >"$LOGDIR/node_$i.log" 2>&1 &
+    if ((i == 0)); then
+        python3 swarm_node.py --id "$i" --command-interface >"$LOGDIR/node_$i.log" 2>&1 &
+    else
+        python3 swarm_node.py --id "$i" >"$LOGDIR/node_$i.log" 2>&1 &
+    fi
     PIDS+=("$!")
     echo "node $i  ->  $LOGDIR/node_$i.log"
     sleep 0.5

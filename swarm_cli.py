@@ -9,6 +9,7 @@ Requires the leader (node 0) to be running with --command-interface.
     swarm_cli.py goto --latlon LAT LON ALT
     swarm_cli.py hold
     swarm_cli.py land
+    swarm_cli.py formation {wedge,line-horizontal,line-vertical}
     swarm_cli.py                      # REPL, one command per line, Ctrl-D to exit
 
 Sends one JSON command datagram to the leader's cfg.CMD_PORT and waits up to
@@ -63,14 +64,17 @@ def build_args(ns, cmd):
             return {"n": n, "e": e, "d": d}
         lat, lon, alt = ns.latlon
         return {"lat": lat, "lon": lon, "alt": alt}
+    if cmd == "FORMATION":
+        return {"name": ns.name}
     return {}
 
 
 def make_parser():
     ap = argparse.ArgumentParser(
-        description="Send ARM/TAKEOFF/GOTO/HOLD/LAND commands to the swarm "
-                     "leader's command interface (swarm_node.py --command-"
-                     "interface). Run with no subcommand for an interactive REPL.")
+        description="Send ARM/TAKEOFF/GOTO/HOLD/LAND/FORMATION commands to "
+                     "the swarm leader's command interface (swarm_node.py "
+                     "--command-interface). Run with no subcommand for an "
+                     "interactive REPL.")
     ap.add_argument("--host", default="127.0.0.1", help="leader's command-link host")
     ap.add_argument("--port", type=int, default=cfg.CMD_PORT, help="leader's command port")
     ap.add_argument("--timeout", type=float, default=5.0, help="seconds to wait for an ack")
@@ -91,6 +95,10 @@ def make_parser():
 
     sub.add_parser("hold", help="hover at the current position")
     sub.add_parser("land", help="land (cascades to followers)")
+
+    fm = sub.add_parser("formation", help="switch the swarm's formation shape")
+    fm.add_argument("name", choices=sorted(cfg.FORMATIONS),
+                     help="formation to switch to")
     return ap
 
 
@@ -102,6 +110,7 @@ def run_repl(host, port, timeout):
     print("  goto --latlon LAT LON ALT")
     print("  hold")
     print("  land")
+    print(f"  formation {{{','.join(sorted(cfg.FORMATIONS))}}}")
     while True:
         try:
             line = input("swarm> ").strip()
@@ -115,7 +124,7 @@ def run_repl(host, port, timeout):
         cmd = parts[0].upper()
         rest = parts[1:]
 
-        if cmd not in ("ARM", "TAKEOFF", "GOTO", "HOLD", "LAND"):
+        if cmd not in ("ARM", "TAKEOFF", "GOTO", "HOLD", "LAND", "FORMATION"):
             print(f"unknown command {parts[0]!r}")
             continue
 
@@ -129,6 +138,11 @@ def run_repl(host, port, timeout):
                 else:
                     n, e, d = (float(x) for x in rest)
                     args = {"n": n, "e": e, "d": d}
+            elif cmd == "FORMATION":
+                if not rest:
+                    print("usage: formation {" + ",".join(sorted(cfg.FORMATIONS)) + "}")
+                    continue
+                args = {"name": rest[0]}
             else:
                 args = {}
         except ValueError:

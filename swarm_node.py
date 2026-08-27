@@ -65,7 +65,7 @@ async def _t_attitude(drone, v):
 
 
 # =================================================================== broadcast
-async def publisher(link, v, node, tf, phase):
+async def publisher(link, v, node, tf, phase, formation):
     dt = 1.0 / cfg.PUBLISH_HZ
     while True:
         if v.ready:
@@ -73,6 +73,7 @@ async def publisher(link, v, node, tf, phase):
                 "t": time.time(),
                 "lvl": node.level,
                 "st": phase[0],
+                "fm": formation[0],
                 "n": v.pn + tf[0],
                 "e": v.pe + tf[1],
                 "d": v.pd + tf[2],
@@ -119,7 +120,7 @@ async def fly_leader(drone, v, tf, phase, log):
         await asyncio.sleep(dt)
 
 
-async def fly_follower(drone, v, link, node, tf, phase, log):
+async def fly_follower(drone, v, link, node, tf, phase, formation, log):
     dt = 1.0 / cfg.PUBLISH_HZ
     hold = None
     warned = False
@@ -148,7 +149,13 @@ async def fly_follower(drone, v, link, node, tf, phase, log):
             phase[0] = "land"
             return
 
-        tn, te, td = formation_target(parent, node.offset)
+        parent_fm = parent.get("fm", cfg.DEFAULT_FORMATION)
+        if parent_fm != formation[0]:
+            log(f"formation -> {parent_fm}")
+            formation[0] = parent_fm
+        offset = cfg.FORMATIONS[formation[0]][node.node_id]
+
+        tn, te, td = formation_target(parent, offset)
         ln, le, ld = tn - tf[0], te - tf[1], td - tf[2]   # swarm -> own local
         yaw = parent["yaw"]
 
@@ -208,15 +215,17 @@ async def run(node, command_interface=False):
     log(f"local->swarm offset N{tf[0]:+.1f} E{tf[1]:+.1f} D{tf[2]:+.1f}")
 
     phase = ["climb"]
-    bg.append(asyncio.create_task(publisher(link, v, node, tf, phase)))
+    formation = [cfg.DEFAULT_FORMATION]
+    bg.append(asyncio.create_task(publisher(link, v, node, tf, phase, formation)))
 
     if node.parent is None and command_interface:
-        # Operator drives arm/takeoff/goto/hold/land over leader_commands.py's
-        # command link instead of the fixed climb-then-LEADER_PATH sequence
-        # below. See run_leader_commands() for the state machine.
+        # Operator drives arm/takeoff/goto/hold/land/formation over
+        # leader_commands.py's command link instead of the fixed
+        # climb-then-LEADER_PATH sequence below. See run_leader_commands()
+        # for the state machine.
         phase[0] = "form"
         try:
-            await run_leader_commands(drone, v, tf, phase, log)
+            await run_leader_commands(drone, v, tf, phase, formation, log)
         finally:
             phase[0] = "land"
             log("landing")
@@ -263,7 +272,7 @@ async def run(node, command_interface=False):
         if node.parent is None:
             await fly_leader(drone, v, tf, phase, log)
         else:
-            await fly_follower(drone, v, link, node, tf, phase, log)
+            await fly_follower(drone, v, link, node, tf, phase, formation, log)
     finally:
         phase[0] = "land"
         log("landing")
