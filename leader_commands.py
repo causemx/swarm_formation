@@ -89,11 +89,15 @@ class LeaderCommander:
     drives the continuous setpoint stream offboard mode requires.
     """
 
-    def __init__(self, drone, v, tf, formation, log):
+    def __init__(self, drone, v, tf, formation, fm_t0, log):
         self.drone = drone
         self.v = v
         self.tf = tf          # (n, e, d) local -> swarm frame offset
         self.formation = formation   # ["name"], shared with publisher() -- see swarm_node.py
+        self.fm_t0 = fm_t0    # [monotonic seconds], stamped fresh on every formation switch;
+                               # followers relay this value down the tree unchanged so an
+                               # orbiting formation (see OrbitSpec) has one shared t=0 for
+                               # the whole swarm instead of per-node clocks that drift apart
         self.log = log
         self.state = "disarmed"   # disarmed -> armed -> climbing -> flying -> landing
         self.target = None    # (n, e, d) in swarm frame; set once armed
@@ -177,6 +181,7 @@ class LeaderCommander:
         if name == self.formation[0]:
             return "accepted", f"already in {name}"
         self.formation[0] = name  # picked up by publisher() and cascaded to children's "fm"
+        self.fm_t0[0] = time.monotonic()   # fresh t=0 for the new formation, e.g. orbit phase0
         self.log(f"formation -> {name}")
         return "accepted", f"switching to {name}"
 
@@ -236,7 +241,7 @@ class LeaderCommander:
 
 
 # ============================================================ leader run loop
-async def run_leader_commands(drone, v, tf, phase, formation, log):
+async def run_leader_commands(drone, v, tf, phase, formation, fm_t0, log):
     """
     Command-driven replacement for fly_leader(): waits for ARM/TAKEOFF over
     the command link, then holds/navigates per GOTO/HOLD/FORMATION until LAND
@@ -245,7 +250,7 @@ async def run_leader_commands(drone, v, tf, phase, formation, log):
     so landing cascades down the tree exactly the same way in both modes; the
     caller's run()/finally still does the actual PX4 offboard.stop()/land().
     """
-    commander = LeaderCommander(drone, v, tf, formation, log)
+    commander = LeaderCommander(drone, v, tf, formation, fm_t0, log)
     await open_command_link(commander)
     log(f"command interface listening on 0.0.0.0:{cfg.CMD_PORT} -- waiting for ARM")
 

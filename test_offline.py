@@ -13,7 +13,7 @@ import asyncio
 import math
 
 import swarm_config as cfg
-from formation import clamp_xyz, formation_target, local_to_swarm_offset
+from formation import clamp_xyz, formation_target, local_to_swarm_offset, orbit_state
 from geo import geodetic_to_ned, ned_to_geodetic
 from swarm_link import open_link
 
@@ -90,6 +90,73 @@ def test_formation_rotation():
     check("stand-off distance invariant", max(dists) - min(dists) < 1e-9)
 
 
+def test_orbit_formation():
+    print("orbit formation geometry")
+    spec = cfg.OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=-2.0)
+    parent = {"n": 0.0, "e": 0.0, "d": -20.0, "yaw": 0.0}
+
+    radii, angles = [], []
+    for i in range(200):
+        t = i * 0.5
+        fwd, right, down, vfwd, vright = orbit_state(spec, t)
+        n, e, d = formation_target(parent, (fwd, right, down))
+        radii.append(math.hypot(n - parent["n"], e - parent["e"]))
+        angles.append(math.atan2(right, fwd))
+        check("altitude offset stays fixed", abs(d - (parent["d"] + spec.down)) < 1e-9)
+        # velocity must be tangential (perpendicular to the radius vector)
+        # and consistent with the sign of omega, or the follower would be
+        # asked to fly a spiral instead of a circle.
+        check("velocity perpendicular to radius",
+              abs(fwd * vfwd + right * vright) < 1e-9)
+        check("velocity direction matches omega sign",
+              (vfwd * -right + vright * fwd) * spec.omega >= -1e-9)
+
+    check("radius constant over time", max(radii) - min(radii) < 1e-9)
+
+    # phase0 offset between two nodes must be preserved as they both revolve.
+    spec2 = cfg.OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=-2.0)
+    for t in (0.0, 5.0, 37.0):
+        f1, r1, _, _, _ = orbit_state(spec, t)
+        f2, r2, _, _, _ = orbit_state(spec2, t)
+        check("opposite-phase node stays diametrically opposite",
+              abs((f1 + f2)) < 1e-9 and abs(r1 + r2) < 1e-9)
+
+
+def test_ring_formation():
+    print("ring formation geometry")
+    leader = {"n": 0.0, "e": 0.0, "d": -20.0, "yaw": 0.0}
+    followers = sorted(nid for nid, n in cfg.SWARM.items() if n.parent is not None)
+    check("ring covers every follower", set(cfg.FORMATIONS["ring"]) - {0} == set(followers))
+
+    def positions(t):
+        pts = {}
+        for nid in followers:
+            spec = cfg.FORMATIONS["ring"][nid]
+            fwd, right, down, _, _ = orbit_state(spec, t)
+            pts[nid] = formation_target(leader, (fwd, right, down))
+        return pts
+
+    p0 = positions(0.0)
+    to_leader = {nid: math.dist(p0[nid], (leader["n"], leader["e"], leader["d"]))
+                 for nid in followers}
+    check("every follower is the same distance from the leader",
+          max(to_leader.values()) - min(to_leader.values()) < 1e-9)
+
+    pair_dist_t0 = {(a, b): math.dist(p0[a], p0[b])
+                    for i, a in enumerate(followers) for b in followers[i + 1:]}
+
+    for t in (1.0, 13.0, 40.0, 97.0):
+        pt = positions(t)
+        for nid in followers:
+            check(f"node {nid} distance to leader constant over time",
+                  abs(math.dist(pt[nid], (leader["n"], leader["e"], leader["d"]))
+                      - to_leader[nid]) < 1e-9)
+        for pair, d0 in pair_dist_t0.items():
+            a, b = pair
+            check(f"pair {pair} distance to EACH OTHER constant over time (rigid ring)",
+                  abs(math.dist(pt[a], pt[b]) - d0) < 1e-9)
+
+
 def test_clamp():
     print("velocity clamp")
     x, y, z = clamp_xyz(30.0, 40.0, 0.0, 5.0)
@@ -111,6 +178,9 @@ def test_topology():
               for n in cfg.SWARM.values() if n.parent is not None))
     ports = [n.px4_instance for n in cfg.SWARM.values()]
     check("unique PX4 instances", len(set(ports)) == len(ports))
+    root = [n.node_id for n in cfg.SWARM.values() if n.parent is None][0]
+    check("root_of() finds the same leader for every node",
+          all(cfg.root_of(n.node_id) == root for n in cfg.SWARM.values()))
     # walk to the root from every node -- catches accidental cycles
     for n in cfg.SWARM.values():
         seen, cur = set(), n
@@ -141,6 +211,8 @@ if __name__ == "__main__":
     test_geo_roundtrip()
     test_frame_transform()
     test_formation_rotation()
+    test_orbit_formation()
+    test_ring_formation()
     test_clamp()
     test_topology()
     asyncio.run(test_link())

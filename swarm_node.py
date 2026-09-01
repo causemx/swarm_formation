@@ -24,7 +24,8 @@ from mavsdk import System
 from mavsdk.offboard import OffboardError, PositionNedYaw, VelocityNedYaw
 
 import swarm_config as cfg
-from formation import clamp_xyz, formation_target, local_to_swarm_offset
+from formation import (clamp_xyz, formation_target, local_to_swarm_offset,
+                       orbit_state, orbit_velocity_ned)
 from leader_commands import run_leader_commands
 from swarm_link import open_link
 
@@ -65,7 +66,7 @@ async def _t_attitude(drone, v):
 
 
 # =================================================================== broadcast
-async def publisher(link, v, node, tf, phase, formation):
+async def publisher(link, v, node, tf, phase, formation, fm_t0):
     dt = 1.0 / cfg.PUBLISH_HZ
     while True:
         if v.ready:
@@ -74,6 +75,7 @@ async def publisher(link, v, node, tf, phase, formation):
                 "lvl": node.level,
                 "st": phase[0],
                 "fm": formation[0],
+                "fm_t0": fm_t0[0],
                 "n": v.pn + tf[0],
                 "e": v.pe + tf[1],
                 "d": v.pd + tf[2],
@@ -120,10 +122,12 @@ async def fly_leader(drone, v, tf, phase, log):
         await asyncio.sleep(dt)
 
 
-async def fly_follower(drone, v, link, node, tf, phase, formation, log):
+async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
     dt = 1.0 / cfg.PUBLISH_HZ
     hold = None
     warned = False
+    root_warned = False
+    root_id = cfg.root_of(node.node_id)
 
     while True:
         parent = link.peer(node.parent)
@@ -153,24 +157,62 @@ async def fly_follower(drone, v, link, node, tf, phase, formation, log):
         if parent_fm != formation[0]:
             log(f"formation -> {parent_fm}")
             formation[0] = parent_fm
-        offset = cfg.FORMATIONS[formation[0]][node.node_id]
+        # fm_t0 always just relays whatever the parent is carrying, which
+        # itself relayed it from ITS parent, and so on up to the leader --
+        # so every node in the tree ends up sharing the exact same t=0
+        # origin the leader stamped when it switched formation, instead of
+        # each node separately (and slightly late, by propagation delay)
+        # discovering the switch and starting its own clock. That matters
+        # for "ring": all four followers must integrate the same elapsed
+        # time to stay evenly spaced, not just individually correct.
+        fm_t0[0] = parent.get("fm_t0", fm_t0[0])
+        entry = cfg.FORMATIONS[formation[0]][node.node_id]
 
-        tn, te, td = formation_target(parent, offset)
+        # Most formations (including "orbit") are measured from the node's
+        # own SWARM parent. "ring" is the exception -- every follower must
+        # share one circle around the swarm leader regardless of tree depth,
+        # so its center is the root's telemetry, not the immediate parent's.
+        center = parent
+        if cfg.FORMATION_CENTER.get(formation[0]) == "root" and root_id != node.parent:
+            root_state = link.peer(root_id)
+            if root_state is not None:
+                center = root_state
+                if root_warned:
+                    log(f"node {root_id} (root) reacquired")
+                    root_warned = False
+            elif not root_warned:
+                log(f"no state from node {root_id} (root), using parent as ring center")
+                root_warned = True
+
+        # A static formation is a plain (fwd, right, down) tuple; an orbiting
+        # one is an OrbitSpec that must be evaluated at the current time to
+        # get both a position offset and the tangential velocity needed to
+        # actually trace the circle (position alone would have the follower
+        # perpetually chasing a moving target on a lag).
+        if isinstance(entry, cfg.OrbitSpec):
+            fwd, right, down, vfwd, vright = orbit_state(entry, time.monotonic() - fm_t0[0])
+            offset = (fwd, right, down)
+            dvn, dve = orbit_velocity_ned(center["yaw"], vfwd, vright)
+        else:
+            offset = entry
+            dvn = dve = 0.0
+
+        tn, te, td = formation_target(center, offset)
         ln, le, ld = tn - tf[0], te - tf[1], td - tf[2]   # swarm -> own local
-        yaw = parent["yaw"]
+        yaw = center["yaw"]
 
         if cfg.SETPOINT_MODE == "vel":
-            vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * parent["vn"]
-            ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * parent["ve"]
-            vd = cfg.KP_POS * (ld - v.pd) + cfg.FF_GAIN * parent["vd"]
+            vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * center["vn"] + dvn
+            ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * center["ve"] + dve
+            vd = cfg.KP_POS * (ld - v.pd) + cfg.FF_GAIN * center["vd"]
             vn, ve, vd = clamp_xyz(vn, ve, vd, cfg.V_MAX)
             await drone.offboard.set_velocity_ned(VelocityNedYaw(vn, ve, vd, yaw))
         else:
             await drone.offboard.set_position_velocity_ned(
                 PositionNedYaw(ln, le, ld, yaw),
-                VelocityNedYaw(parent["vn"] * cfg.FF_GAIN,
-                               parent["ve"] * cfg.FF_GAIN,
-                               parent["vd"] * cfg.FF_GAIN,
+                VelocityNedYaw(center["vn"] * cfg.FF_GAIN + dvn,
+                               center["ve"] * cfg.FF_GAIN + dve,
+                               center["vd"] * cfg.FF_GAIN,
                                yaw))
 
         await asyncio.sleep(dt)
@@ -216,7 +258,8 @@ async def run(node, command_interface=False):
 
     phase = ["climb"]
     formation = [cfg.DEFAULT_FORMATION]
-    bg.append(asyncio.create_task(publisher(link, v, node, tf, phase, formation)))
+    fm_t0 = [time.monotonic()]   # origin stamped fresh each time the leader switches formation
+    bg.append(asyncio.create_task(publisher(link, v, node, tf, phase, formation, fm_t0)))
 
     if node.parent is None and command_interface:
         # Operator drives arm/takeoff/goto/hold/land/formation over
@@ -225,7 +268,7 @@ async def run(node, command_interface=False):
         # for the state machine.
         phase[0] = "form"
         try:
-            await run_leader_commands(drone, v, tf, phase, formation, log)
+            await run_leader_commands(drone, v, tf, phase, formation, fm_t0, log)
         finally:
             phase[0] = "land"
             log("landing")
@@ -272,7 +315,7 @@ async def run(node, command_interface=False):
         if node.parent is None:
             await fly_leader(drone, v, tf, phase, log)
         else:
-            await fly_follower(drone, v, link, node, tf, phase, formation, log)
+            await fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log)
     finally:
         phase[0] = "land"
         log("landing")

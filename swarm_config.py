@@ -5,6 +5,7 @@ Everything that describes "what the swarm is" lives here; the node logic in
 swarm_node.py is generic and reads only this file.
 """
 
+import math
 from dataclasses import dataclass
 
 # --------------------------------------------------------------- communication
@@ -54,6 +55,25 @@ LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
 
 
 @dataclass
+class OrbitSpec:
+    """
+    A dynamic formation entry: the offset traces a circle over time instead of
+    sitting still. fly_follower() re-evaluates this every publish tick using
+    orbit_state(spec, t) from formation.py, then feeds it through
+    formation_target() exactly like a static (fwd, right, down) tuple.
+    """
+    radius: float   # m, distance from the parent's current position
+    omega: float    # rad/s, angular velocity; sign sets direction (+ = CCW)
+    phase0: float   # rad, angle at t=0 -- t is seconds since the swarm
+                    # switched INTO this formation (see fly_follower's
+                    # orbit_t0), not wall-clock time, so re-entering an orbit
+                    # formation always starts from this same layout angle
+                    # instead of resuming a stale one.
+    down: float     # m, fixed altitude offset from the parent (no vertical
+                    # oscillation -- only fwd/right revolve)
+
+
+@dataclass
 class NodeCfg:
     node_id: int
     level: int                    # 0 = swarm leader
@@ -71,6 +91,14 @@ class NodeCfg:
     def grpc_port(self) -> int:
         # Each process spawns its own mavsdk_server, so they need distinct ports.
         return 50060 + self.px4_instance
+
+
+def root_of(node_id):
+    """Walk SWARM's follow-tree up to the ultimate leader (parent is None)."""
+    n = SWARM[node_id]
+    while n.parent is not None:
+        n = SWARM[n.parent]
+    return n.node_id
 
 
 # --------------------------------------------------------------------- topology
@@ -134,8 +162,56 @@ FORMATIONS = {
         3: (-8.0, -8.0, 0.0),
         4: (-8.0, +8.0, 0.0),
     },
+    # Orbital revolution: the leader stays put at the center and 1,2 sweep
+    # around it in a circle. 3,4 use OrbitSpec entries too, but their parent
+    # is 1/2 (not 0) per SWARM's fixed follow-tree, so they orbit their own
+    # parent instead of the leader directly -- moons revolving around a
+    # planet that is itself revolving around the leader, rather than a flat
+    # ring of 4. phase0 = 0/pi puts each pair on opposite sides of its parent
+    # so they don't collide.
+    #
+    # ORBIT_OMEGA is picked so the fastest tangential speed (radius * omega)
+    # stays well under V_MAX = 8 m/s -- at radius 8 m this is 8 * 0.15 = 1.2
+    # m/s, a slow, visually clear revolution (~42 s per lap).
+    "orbit": {
+        0: (0.0, 0.0, 0.0),
+        1: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=-2.0),
+        2: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=-2.0),
+        3: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=0.0),
+        4: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=0.0),
+    },
+    # Single shared ring: unlike "orbit", every follower circles the SAME
+    # center (the leader) at the SAME radius and angular velocity, evenly
+    # spaced by phase -- a rigid rotation, so not only is each follower's
+    # distance to the leader constant, every pair of followers' distance to
+    # EACH OTHER is constant too (the whole ring turns as one piece). This
+    # needs the leader as the orbit center regardless of tree depth, so
+    # fly_follower() looks these entries' center up via FORMATION_CENTER
+    # below instead of the node's immediate SWARM parent.
+    #
+    # radius 10 m (vs. 8 m for "orbit", just to look visually distinct);
+    # omega unchanged at 0.15 rad/s -> 1.5 m/s tangential, still well under
+    # V_MAX. phase0 = 2*pi*i/4 for the 4 followers spaces them 90 degrees
+    # apart around the circle.
+    "ring": {
+        0: (0.0, 0.0, 0.0),
+        1: OrbitSpec(radius=10.0, omega=0.15, phase0=0.0, down=-3.0),
+        2: OrbitSpec(radius=10.0, omega=0.15, phase0=math.pi / 2, down=-3.0),
+        3: OrbitSpec(radius=10.0, omega=0.15, phase0=math.pi, down=-3.0),
+        4: OrbitSpec(radius=10.0, omega=0.15, phase0=3 * math.pi / 2, down=-3.0),
+    },
 }
 DEFAULT_FORMATION = "wedge"
+
+# Which peer's telemetry a formation's offsets are measured from. Every
+# static formation and "orbit" is measured from the node's own SWARM parent
+# (the default -- omitted here). "ring" is the one exception: it needs every
+# follower on the SAME circle around the swarm leader regardless of tree
+# depth, so its offsets are measured from the root instead of the immediate
+# parent. See fly_follower()'s use of root_of() for how this is applied.
+FORMATION_CENTER = {
+    "ring": "root",
+}
 
 # Leader path, in the common swarm frame: (north, east, down) [m].
 LEADER_PATH = [
