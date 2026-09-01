@@ -122,6 +122,18 @@ FORMATIONS = {
         3: (0.0, -8.0, 0.0),
         4: (0.0, +8.0, 0.0),
     },
+    # sawtooth chain with the leader at the center low point: 1,2 sit ahead
+    # and out to either side, and 3,4 continue the zigzag back down past
+    # them -- so along the right axis the chain reads low(3) - high(1) -
+    # low(0) - high(2) - low(4), same alternating shape as line-horizontal
+    # but with height (forward offset) zigzagging instead of a flat line.
+    "zigzag": {
+        0: (0.0, 0.0, 0.0),
+        1: (8.0, -8.0, -2.0),
+        2: (8.0, +8.0, -2.0),
+        3: (-8.0, -8.0, 0.0),
+        4: (-8.0, +8.0, 0.0),
+    },
 }
 DEFAULT_FORMATION = "wedge"
 
