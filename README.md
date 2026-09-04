@@ -65,6 +65,11 @@ progress.
 
 ```bash
 pip install mavsdk                       # 2.x; for 1.x see the note below
+pip install cython "git+https://github.com/sybrenstuvel/Python-RVO2"
+                                          # ORCA collision avoidance (see avoidance.py) --
+                                          # builds a native extension, so needs cmake + a
+                                          # C++ compiler; not on PyPI under any name, hence
+                                          # the git URL instead of a plain package name
 cd ~/PX4-Autopilot
 make px4_sitl_sih sihsim_quadx           # builds SIH without Gazebo deps
 ```

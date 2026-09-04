@@ -24,8 +24,14 @@ from mavsdk import System
 from mavsdk.offboard import OffboardError, PositionNedYaw, VelocityNedYaw
 
 import swarm_config as cfg
-from formation import (clamp_xyz, formation_target, local_to_swarm_offset,
-                       orbit_state, orbit_velocity_ned)
+from avoidance import orca_velocity
+from formation import (
+    clamp_xyz,
+    formation_target,
+    local_to_swarm_offset,
+    orbit_state,
+    orbit_velocity_ned,
+)
 from leader_commands import run_leader_commands
 from swarm_link import open_link
 
@@ -201,19 +207,54 @@ async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
         ln, le, ld = tn - tf[0], te - tf[1], td - tf[2]   # swarm -> own local
         yaw = center["yaw"]
 
+        # ORCA only runs for a window right after a formation switch -- the
+        # moment offsets jump to a new shape and straight-line paths to the
+        # new targets are most likely to cross. Once everyone has settled,
+        # tracking goes back to the plain formation math above with no
+        # avoidance overhead.
+        avoiding = time.monotonic() - fm_t0[0] < cfg.AVOID_WINDOW
+
         if cfg.SETPOINT_MODE == "vel":
             vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * center["vn"] + dvn
             ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * center["ve"] + dve
             vd = cfg.KP_POS * (ld - v.pd) + cfg.FF_GAIN * center["vd"]
+
+            if avoiding:
+                self_n, self_e = v.pn + tf[0], v.pe + tf[1]
+                neighbors = (p for pid, p in link.all_peers().items() if pid != node.node_id)
+                vn, ve = orca_velocity(self_n, self_e, v.vn, v.ve, neighbors,
+                                        vn, ve, cfg.AVOID_RADIUS, cfg.V_MAX,
+                                        cfg.AVOID_NEIGHBOR_DIST, cfg.AVOID_TIME_HORIZON)
+
             vn, ve, vd = clamp_xyz(vn, ve, vd, cfg.V_MAX)
             await drone.offboard.set_velocity_ned(VelocityNedYaw(vn, ve, vd, yaw))
         else:
+            vn_ff = center["vn"] * cfg.FF_GAIN + dvn
+            ve_ff = center["ve"] * cfg.FF_GAIN + dve
+
+            if avoiding:
+                # Feed a proportional pursuit term (not just the raw
+                # feed-forward) into ORCA as the preferred velocity, so it
+                # has an actual "where I'm trying to go" to steer -- then
+                # re-point the position setpoint one tick ahead along
+                # ORCA's answer instead of straight at the formation
+                # target. Leaving the position setpoint at the raw target
+                # would have PX4's own position loop pull the vehicle right
+                # back onto the collision course ORCA just steered it away
+                # from, fighting the velocity feed-forward instead of
+                # cooperating with it.
+                self_n, self_e = v.pn + tf[0], v.pe + tf[1]
+                pref_vn = cfg.KP_POS * (ln - v.pn) + vn_ff
+                pref_ve = cfg.KP_POS * (le - v.pe) + ve_ff
+                neighbors = (p for pid, p in link.all_peers().items() if pid != node.node_id)
+                vn_ff, ve_ff = orca_velocity(self_n, self_e, v.vn, v.ve, neighbors,
+                                              pref_vn, pref_ve, cfg.AVOID_RADIUS, cfg.V_MAX,
+                                              cfg.AVOID_NEIGHBOR_DIST, cfg.AVOID_TIME_HORIZON)
+                ln, le = v.pn + vn_ff * dt, v.pe + ve_ff * dt
+
             await drone.offboard.set_position_velocity_ned(
                 PositionNedYaw(ln, le, ld, yaw),
-                VelocityNedYaw(center["vn"] * cfg.FF_GAIN + dvn,
-                               center["ve"] * cfg.FF_GAIN + dve,
-                               center["vd"] * cfg.FF_GAIN,
-                               yaw))
+                VelocityNedYaw(vn_ff, ve_ff, center["vd"] * cfg.FF_GAIN, yaw))
 
         await asyncio.sleep(dt)
 

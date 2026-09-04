@@ -13,6 +13,7 @@ import asyncio
 import math
 
 import swarm_config as cfg
+from avoidance import orca_velocity, rvo2
 from formation import clamp_xyz, formation_target, local_to_swarm_offset, orbit_state
 from geo import geodetic_to_ned, ned_to_geodetic
 from swarm_link import open_link
@@ -157,6 +158,65 @@ def test_ring_formation():
                   abs(math.dist(pt[a], pt[b]) - d0) < 1e-9)
 
 
+def test_avoidance():
+    print("ORCA collision avoidance")
+    if rvo2 is None:
+        print("  SKIP  rvo2 not installed -- see README.md Prerequisites")
+        return
+
+    radius, max_speed = 1.5, 8.0
+    neighbor_dist, time_horizon = 15.0, 2.0
+    dt = 1.0 / 20.0
+
+    def pref_toward(pos, goal, speed=2.0):
+        dn, de = goal[0] - pos[0], goal[1] - pos[1]
+        d = math.hypot(dn, de)
+        return (0.0, 0.0) if d < 1e-6 else (dn / d * speed, de / d * speed)
+
+    def simulate(use_avoidance):
+        pos = {"a": [-10.0, 0.3], "b": [10.0, -0.3]}
+        goal = {"a": [10.0, 0.3], "b": [-10.0, -0.3]}
+        vel = {"a": [0.0, 0.0], "b": [0.0, 0.0]}
+        min_sep = math.inf
+        for _ in range(400):
+            new_vel = {}
+            for me, other in (("a", "b"), ("b", "a")):
+                pn, pe = pref_toward(pos[me], goal[me])
+                if use_avoidance:
+                    nb = [{"n": pos[other][0], "e": pos[other][1],
+                           "vn": vel[other][0], "ve": vel[other][1]}]
+                    new_vel[me] = orca_velocity(pos[me][0], pos[me][1], vel[me][0], vel[me][1],
+                                                 nb, pn, pe, radius, max_speed,
+                                                 neighbor_dist, time_horizon)
+                else:
+                    new_vel[me] = (pn, pe)
+            for me in ("a", "b"):
+                vel[me] = list(new_vel[me])
+                pos[me][0] += vel[me][0] * dt
+                pos[me][1] += vel[me][1] * dt
+            min_sep = min(min_sep, math.dist(pos["a"], pos["b"]))
+        return min_sep
+
+    naive_sep = simulate(use_avoidance=False)
+    check("unmodified pursuit would have closed inside the safety bubble",
+          naive_sep < 2 * radius)
+
+    orca_sep = simulate(use_avoidance=True)
+    check("ORCA keeps the same head-on pair at least 2*radius apart",
+          orca_sep >= 2 * radius - 1e-6)
+
+    vn, ve = orca_velocity(0.0, 0.0, 0.0, 0.0, [], 3.0, 4.0, radius, max_speed,
+                            neighbor_dist, time_horizon)
+    check("a lone agent with no neighbors gets its preferred velocity back",
+          abs(vn - 3.0) < 1e-6 and abs(ve - 4.0) < 1e-6)
+
+    vn, ve = orca_velocity(0.0, 0.0, 0.0, 0.0,
+                            [{"n": 1.0, "e": 0.0}],   # no vn/ve -- must not raise
+                            3.0, 0.0, radius, max_speed, neighbor_dist, time_horizon)
+    check("a malformed neighbor entry doesn't raise and yields a finite velocity",
+          math.isfinite(vn) and math.isfinite(ve))
+
+
 def test_clamp():
     print("velocity clamp")
     x, y, z = clamp_xyz(30.0, 40.0, 0.0, 5.0)
@@ -213,6 +273,7 @@ if __name__ == "__main__":
     test_formation_rotation()
     test_orbit_formation()
     test_ring_formation()
+    test_avoidance()
     test_clamp()
     test_topology()
     asyncio.run(test_link())

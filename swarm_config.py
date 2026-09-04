@@ -51,6 +51,25 @@ FF_GAIN = 1.0       # 0..1, how much of the parent velocity is fed forward
 TAKEOFF_ALT = 5.0   # m AGL, initial climb over own home before joining formation
 ARRIVAL_R = 2.0     # m, leader waypoint acceptance radius
 LEADER_SPEED = 4.0  # m/s, feed-forward speed along the leader path
+
+# --------------------------------------------------------- collision avoidance
+# ORCA (see avoidance.py) is only engaged for AVOID_WINDOW seconds after a
+# formation switch (see fm_t0 below) -- the moment offsets jump to a new
+# shape and followers' straight-line paths to their new targets are most
+# likely to cross. Outside that window, followers track the formation
+# directly as before.
+#
+# AVOID_RADIUS is the safety bubble around each vehicle -- must stay well
+# under half the smallest steady-state neighbor spacing across the existing
+# formations (~8 m, e.g. line-v's node1<->node2 leg) or ORCA would
+# fight the formation itself even once everyone has arrived.
+AVOID_RADIUS = 1.5          # m, per-agent collision bubble
+AVOID_NEIGHBOR_DIST = 15.0  # m, how far away another node is worth reacting to
+AVOID_TIME_HORIZON = 2.0    # s, ORCA look-ahead for predicted collisions
+# 12 s comfortably covers the largest single-leg offset delta between any two
+# formations already defined (worst case ~15 m, e.g. wedge -> line-v)
+# at the kind of closing speed PX4's position loop produces in practice.
+AVOID_WINDOW = 12.0         # s after a formation switch
 LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
 
 
@@ -134,7 +153,7 @@ FORMATIONS = {
     # single file behind the leader: 1,2 tuck directly in behind 0, and their
     # children (3, 4) tuck in behind them in turn -- the chain composes into
     # one straight line along the leader's forward axis.
-    "line-vertical": {
+    "line-v": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, 0.0, -2.0),
         2: (-16.0, 0.0, -2.0),
@@ -143,7 +162,7 @@ FORMATIONS = {
     },
     # abreast of the leader, spread along its right axis: 1,2 sit either side
     # of 0 and 3,4 extend the line further out past 1,2.
-    "line-horizontal": {
+    "line-h": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, -8.0, -2.0),
         2: (-8.0, +8.0, -2.0),
@@ -153,7 +172,7 @@ FORMATIONS = {
     # sawtooth chain with the leader at the center low point: 1,2 sit ahead
     # and out to either side, and 3,4 continue the zigzag back down past
     # them -- so along the right axis the chain reads low(3) - high(1) -
-    # low(0) - high(2) - low(4), same alternating shape as line-horizontal
+    # low(0) - high(2) - low(4), same alternating shape as line-h
     # but with height (forward offset) zigzagging instead of a flat line.
     "zigzag": {
         0: (0.0, 0.0, 0.0),
