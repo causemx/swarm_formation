@@ -9,7 +9,9 @@ Requires the leader (node 0) to be running with --command-interface.
     swarm_cli.py goto --latlon LAT LON ALT
     swarm_cli.py hold
     swarm_cli.py land
-    swarm_cli.py formation {wedge,line-h,line-v}
+    swarm_cli.py formation {wedge,line_h,line_v}
+    swarm_cli.py formation anchor_ring --ned N E D
+    swarm_cli.py formation anchor_ring --latlon LAT LON ALT
     swarm_cli.py                      # REPL, one command per line, Ctrl-D to exit
 
 Sends one JSON command datagram to the leader's cfg.CMD_PORT and waits up to
@@ -65,7 +67,17 @@ def build_args(ns, cmd):
         lat, lon, alt = ns.latlon
         return {"lat": lat, "lon": lon, "alt": alt}
     if cmd == "FORMATION":
-        return {"name": ns.name}
+        if cfg.FORMATION_CENTER.get(ns.name) == "manual" and not (ns.ned or ns.latlon):
+            raise SystemExit(f"formation {ns.name!r} needs a center: --ned N E D or "
+                              f"--latlon LAT LON ALT")
+        args = {"name": ns.name}
+        if ns.ned:
+            n, e, d = ns.ned
+            args.update(n=n, e=e, d=d)
+        elif ns.latlon:
+            lat, lon, alt = ns.latlon
+            args.update(lat=lat, lon=lon, alt=alt)
+        return args
     return {}
 
 
@@ -99,6 +111,12 @@ def make_parser():
     fm = sub.add_parser("formation", help="switch the swarm's formation shape")
     fm.add_argument("name", choices=sorted(cfg.FORMATIONS),
                      help="formation to switch to")
+    fm_grp = fm.add_mutually_exclusive_group()
+    fm_grp.add_argument("--ned", type=float, nargs=3, metavar=("N", "E", "D"),
+                         help="swarm-frame north/east/down, metres -- required "
+                              "for a manually-centered formation (e.g. anchor_ring)")
+    fm_grp.add_argument("--latlon", type=float, nargs=3, metavar=("LAT", "LON", "ALT"),
+                         help="geodetic lat/lon/alt-AMSL, alternative to --ned")
     return ap
 
 
@@ -111,6 +129,8 @@ def run_repl(host, port, timeout):
     print("  hold")
     print("  land")
     print(f"  formation {{{','.join(sorted(cfg.FORMATIONS))}}}")
+    print("  formation anchor_ring N E D")
+    print("  formation anchor_ring --latlon LAT LON ALT")
     while True:
         try:
             line = input("swarm> ").strip()
@@ -142,7 +162,17 @@ def run_repl(host, port, timeout):
                 if not rest:
                     print("usage: formation {" + ",".join(sorted(cfg.FORMATIONS)) + "}")
                     continue
-                args = {"name": rest[0]}
+                name, center_args = rest[0], rest[1:]
+                args = {"name": name}
+                if center_args and center_args[0] == "--latlon":
+                    lat, lon, alt = (float(x) for x in center_args[1:])
+                    args.update(lat=lat, lon=lon, alt=alt)
+                elif center_args:
+                    n, e, d = (float(x) for x in center_args)
+                    args.update(n=n, e=e, d=d)
+                elif cfg.FORMATION_CENTER.get(name) == "manual":
+                    print(f"formation {name!r} needs a center: N E D or --latlon LAT LON ALT")
+                    continue
             else:
                 args = {}
         except ValueError:

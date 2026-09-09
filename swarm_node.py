@@ -72,7 +72,7 @@ async def _t_attitude(drone, v):
 
 
 # =================================================================== broadcast
-async def publisher(link, v, node, tf, phase, formation, fm_t0):
+async def publisher(link, v, node, tf, phase, formation, fm_t0, fm_center):
     dt = 1.0 / cfg.PUBLISH_HZ
     while True:
         if v.ready:
@@ -82,6 +82,7 @@ async def publisher(link, v, node, tf, phase, formation, fm_t0):
                 "st": phase[0],
                 "fm": formation[0],
                 "fm_t0": fm_t0[0],
+                "fm_center": fm_center[0],
                 "n": v.pn + tf[0],
                 "e": v.pe + tf[1],
                 "d": v.pd + tf[2],
@@ -128,7 +129,7 @@ async def fly_leader(drone, v, tf, phase, log):
         await asyncio.sleep(dt)
 
 
-async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
+async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, fm_center, log):
     dt = 1.0 / cfg.PUBLISH_HZ
     hold = None
     warned = False
@@ -172,14 +173,27 @@ async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
         # for "ring": all four followers must integrate the same elapsed
         # time to stay evenly spaced, not just individually correct.
         fm_t0[0] = parent.get("fm_t0", fm_t0[0])
+        # Same relay as fm_t0: propagate whatever anchor point the leader
+        # stamped for "anchor_ring" down the tree unchanged, so every node
+        # circles the exact same fixed point instead of each hop repeating
+        # some locally-adjusted value.
+        fm_center[0] = parent.get("fm_center", fm_center[0])
         entry = cfg.FORMATIONS[formation[0]][node.node_id]
 
-        # Most formations (including "orbit") are measured from the node's
+        # Most formations (including "orbit_ring") are measured from the node's
         # own SWARM parent. "ring" is the exception -- every follower must
         # share one circle around the swarm leader regardless of tree depth,
         # so its center is the root's telemetry, not the immediate parent's.
+        # "anchor_ring" is centered on a fixed, manually supplied swarm-frame
+        # point instead of any vehicle's telemetry -- there's no heading to
+        # measure, so yaw/velocity are just zero.
+        center_mode = cfg.FORMATION_CENTER.get(formation[0])
         center = parent
-        if cfg.FORMATION_CENTER.get(formation[0]) == "root" and root_id != node.parent:
+        if center_mode == "manual":
+            cn, ce, cd = fm_center[0]
+            center = {"n": cn, "e": ce, "d": cd, "yaw": 0.0,
+                      "vn": 0.0, "ve": 0.0, "vd": 0.0}
+        elif center_mode == "root" and root_id != node.parent:
             root_state = link.peer(root_id)
             if root_state is not None:
                 center = root_state
@@ -300,7 +314,9 @@ async def run(node, command_interface=False):
     phase = ["climb"]
     formation = [cfg.DEFAULT_FORMATION]
     fm_t0 = [time.monotonic()]   # origin stamped fresh each time the leader switches formation
-    bg.append(asyncio.create_task(publisher(link, v, node, tf, phase, formation, fm_t0)))
+    fm_center = [(0.0, 0.0, 0.0)]  # manual anchor point, set on "anchor_ring" switches
+    bg.append(asyncio.create_task(
+        publisher(link, v, node, tf, phase, formation, fm_t0, fm_center)))
 
     if node.parent is None and command_interface:
         # Operator drives arm/takeoff/goto/hold/land/formation over
@@ -309,7 +325,7 @@ async def run(node, command_interface=False):
         # for the state machine.
         phase[0] = "form"
         try:
-            await run_leader_commands(drone, v, tf, phase, formation, fm_t0, log)
+            await run_leader_commands(drone, v, tf, phase, formation, fm_t0, fm_center, log)
         finally:
             phase[0] = "land"
             log("landing")
@@ -356,7 +372,7 @@ async def run(node, command_interface=False):
         if node.parent is None:
             await fly_leader(drone, v, tf, phase, log)
         else:
-            await fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log)
+            await fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, fm_center, log)
     finally:
         phase[0] = "land"
         log("landing")

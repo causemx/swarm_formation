@@ -61,13 +61,13 @@ LEADER_SPEED = 4.0  # m/s, feed-forward speed along the leader path
 #
 # AVOID_RADIUS is the safety bubble around each vehicle -- must stay well
 # under half the smallest steady-state neighbor spacing across the existing
-# formations (~8 m, e.g. line-v's node1<->node2 leg) or ORCA would
+# formations (~8 m, e.g. line_v's node1<->node2 leg) or ORCA would
 # fight the formation itself even once everyone has arrived.
 AVOID_RADIUS = 1.5          # m, per-agent collision bubble
 AVOID_NEIGHBOR_DIST = 15.0  # m, how far away another node is worth reacting to
 AVOID_TIME_HORIZON = 2.0    # s, ORCA look-ahead for predicted collisions
 # 12 s comfortably covers the largest single-leg offset delta between any two
-# formations already defined (worst case ~15 m, e.g. wedge -> line-v)
+# formations already defined (worst case ~15 m, e.g. wedge -> line_v)
 # at the kind of closing speed PX4's position loop produces in practice.
 AVOID_WINDOW = 12.0         # s after a formation switch
 LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
@@ -153,7 +153,7 @@ FORMATIONS = {
     # single file behind the leader: 1,2 tuck directly in behind 0, and their
     # children (3, 4) tuck in behind them in turn -- the chain composes into
     # one straight line along the leader's forward axis.
-    "line-v": {
+    "line_v": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, 0.0, -2.0),
         2: (-16.0, 0.0, -2.0),
@@ -162,7 +162,7 @@ FORMATIONS = {
     },
     # abreast of the leader, spread along its right axis: 1,2 sit either side
     # of 0 and 3,4 extend the line further out past 1,2.
-    "line-h": {
+    "line_h": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, -8.0, -2.0),
         2: (-8.0, +8.0, -2.0),
@@ -172,7 +172,7 @@ FORMATIONS = {
     # sawtooth chain with the leader at the center low point: 1,2 sit ahead
     # and out to either side, and 3,4 continue the zigzag back down past
     # them -- so along the right axis the chain reads low(3) - high(1) -
-    # low(0) - high(2) - low(4), same alternating shape as line-h
+    # low(0) - high(2) - low(4), same alternating shape as line_h
     # but with height (forward offset) zigzagging instead of a flat line.
     "zigzag": {
         0: (0.0, 0.0, 0.0),
@@ -192,14 +192,14 @@ FORMATIONS = {
     # ORBIT_OMEGA is picked so the fastest tangential speed (radius * omega)
     # stays well under V_MAX = 8 m/s -- at radius 8 m this is 8 * 0.15 = 1.2
     # m/s, a slow, visually clear revolution (~42 s per lap).
-    "orbit": {
+    "orbit_ring": {
         0: (0.0, 0.0, 0.0),
         1: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=-2.0),
         2: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=-2.0),
         3: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=0.0),
         4: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=0.0),
     },
-    # Single shared ring: unlike "orbit", every follower circles the SAME
+    # Single shared ring: unlike "orbit_ring", every follower circles the SAME
     # center (the leader) at the SAME radius and angular velocity, evenly
     # spaced by phase -- a rigid rotation, so not only is each follower's
     # distance to the leader constant, every pair of followers' distance to
@@ -208,7 +208,7 @@ FORMATIONS = {
     # fly_follower() looks these entries' center up via FORMATION_CENTER
     # below instead of the node's immediate SWARM parent.
     #
-    # radius 10 m (vs. 8 m for "orbit", just to look visually distinct);
+    # radius 10 m (vs. 8 m for "orbit_ring", just to look visually distinct);
     # omega unchanged at 0.15 rad/s -> 1.5 m/s tangential, still well under
     # V_MAX. phase0 = 2*pi*i/4 for the 4 followers spaces them 90 degrees
     # apart around the circle.
@@ -219,17 +219,43 @@ FORMATIONS = {
         3: OrbitSpec(radius=10.0, omega=0.15, phase0=math.pi, down=-3.0),
         4: OrbitSpec(radius=10.0, omega=0.15, phase0=3 * math.pi / 2, down=-3.0),
     },
+    # Same shared-ring idea as "ring", but centered on a fixed swarm-frame
+    # point the operator supplies with the FORMATION command (see
+    # swarm_cli.py's `formation anchor_ring --ned/--latlon` and
+    # LeaderCommander._cmd_formation) instead of the leader's live position
+    # -- and unlike "ring", the leader (node 0) takes its own slot on the
+    # circle too, so all five vehicles surround the anchor point rather than
+    # four followers circling the fifth. Node 0's entry is consulted by
+    # LeaderCommander.step() itself (run_leader_commands()'s command-driven
+    # leader is the only leader path that supports switching formations at
+    # all, so that is the only place this is read), the same OrbitSpec ->
+    # orbit_state() math fly_follower() uses for every other node. phase0 =
+    # 2*pi*i/5 spaces all 5 nodes evenly around the circle.
+    "anchor_ring": {
+        0: OrbitSpec(radius=10.0, omega=0.15, phase0=0.0, down=-3.0),
+        1: OrbitSpec(radius=10.0, omega=0.15, phase0=2 * math.pi / 5, down=-3.0),
+        2: OrbitSpec(radius=10.0, omega=0.15, phase0=4 * math.pi / 5, down=-3.0),
+        3: OrbitSpec(radius=10.0, omega=0.15, phase0=6 * math.pi / 5, down=-3.0),
+        4: OrbitSpec(radius=10.0, omega=0.15, phase0=8 * math.pi / 5, down=-3.0),
+    },
 }
 DEFAULT_FORMATION = "wedge"
 
 # Which peer's telemetry a formation's offsets are measured from. Every
-# static formation and "orbit" is measured from the node's own SWARM parent
+# static formation and "orbit_ring" is measured from the node's own SWARM parent
 # (the default -- omitted here). "ring" is the one exception: it needs every
 # follower on the SAME circle around the swarm leader regardless of tree
 # depth, so its offsets are measured from the root instead of the immediate
 # parent. See fly_follower()'s use of root_of() for how this is applied.
+#
+# "anchor_ring" is centered on a fixed point the operator supplies manually
+# (a plain (n, e, d) swarm-frame point, no telemetry involved) rather than
+# any vehicle's live position -- see fm_center in swarm_node.py/
+# leader_commands.py for how that point is stamped by the leader and
+# relayed down the tree alongside "fm"/"fm_t0".
 FORMATION_CENTER = {
     "ring": "root",
+    "anchor_ring": "manual",
 }
 
 # Leader path, in the common swarm frame: (north, east, down) [m].

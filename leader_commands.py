@@ -19,6 +19,11 @@ socket on cfg.CMD_PORT.
     GOTO args (one of):      {"n": float, "e": float, "d": float}   # swarm frame
                               {"lat": float, "lon": float, "alt": float}
     FORMATION args:          {"name": str}              # key in cfg.FORMATIONS
+                              # formations with FORMATION_CENTER == "manual"
+                              # (e.g. "anchor_ring") additionally require the
+                              # ring's fixed center, one of:
+                              {"n": float, "e": float, "d": float}   # swarm frame
+                              {"lat": float, "lon": float, "alt": float}
 
 Every ack is sent as soon as the command is validated and accepted or
 rejected -- GOTO and TAKEOFF do not wait for arrival before acking. The
@@ -36,7 +41,7 @@ import time
 from mavsdk.offboard import OffboardError, PositionNedYaw, VelocityNedYaw
 
 import swarm_config as cfg
-from formation import clamp_xyz
+from formation import clamp_xyz, orbit_state, orbit_velocity_ned
 from geo import geodetic_to_ned
 
 VALID_CMDS = {"ARM", "TAKEOFF", "GOTO", "HOLD", "LAND", "FORMATION"}
@@ -89,7 +94,7 @@ class LeaderCommander:
     drives the continuous setpoint stream offboard mode requires.
     """
 
-    def __init__(self, drone, v, tf, formation, fm_t0, log):
+    def __init__(self, drone, v, tf, formation, fm_t0, fm_center, log):
         self.drone = drone
         self.v = v
         self.tf = tf          # (n, e, d) local -> swarm frame offset
@@ -98,6 +103,10 @@ class LeaderCommander:
                                # followers relay this value down the tree unchanged so an
                                # orbiting formation (see OrbitSpec) has one shared t=0 for
                                # the whole swarm instead of per-node clocks that drift apart
+        self.fm_center = fm_center   # [(n, e, d)], swarm-frame anchor point for
+                               # FORMATION_CENTER == "manual" formations (e.g.
+                               # "anchor_ring"); relayed down the tree exactly like
+                               # fm_t0 so every node circles the same fixed point
         self.log = log
         self.state = "disarmed"   # disarmed -> armed -> climbing -> flying -> landing
         self.target = None    # (n, e, d) in swarm frame; set once armed
@@ -178,11 +187,36 @@ class LeaderCommander:
         name = args.get("name")
         if name not in cfg.FORMATIONS:
             return "rejected", f"unknown formation {name!r}; known: {sorted(cfg.FORMATIONS)}"
-        if name == self.formation[0]:
+
+        center = None
+        if cfg.FORMATION_CENTER.get(name) == "manual":
+            if "lat" in args:
+                center = geodetic_to_ned(args["lat"], args["lon"], args["alt"],
+                                          cfg.ORIGIN_LAT, cfg.ORIGIN_LON, cfg.ORIGIN_ALT)
+            elif "n" in args:
+                center = (args["n"], args["e"], args["d"])
+            else:
+                return "rejected", f"{name} needs a center: n/e/d or lat/lon/alt"
+
+        if name == self.formation[0] and center is None:
             return "accepted", f"already in {name}"
+
         self.formation[0] = name  # picked up by publisher() and cascaded to children's "fm"
         self.fm_t0[0] = time.monotonic()   # fresh t=0 for the new formation, e.g. orbit phase0
-        self.log(f"formation -> {name}")
+        if center is not None:
+            self.fm_center[0] = center     # relayed down the tree via "fm_center"
+            self.log(f"formation -> {name}, center N{center[0]:.1f} E{center[1]:.1f} D{center[2]:.1f}")
+        else:
+            self.log(f"formation -> {name}")
+        if self.state == "flying":
+            # step()'s orbit branch drives the leader's position itself once
+            # this is a manual-center formation; self.target is otherwise
+            # stale here (it's whatever the last GOTO/HOLD left it at, or
+            # a leftover orbit point from before this switch), so reset it
+            # to "hold where I am" to avoid a lurch either entering or
+            # leaving an orbiting formation.
+            self.target = self._here()
+            self.navigating = False
         return "accepted", f"switching to {name}"
 
     async def _cmd_land(self, args):
@@ -218,6 +252,24 @@ class LeaderCommander:
         if self.state not in ("armed", "flying") or self.target is None:
             return
 
+        # In a manual-center formation (e.g. "anchor_ring"), the leader is
+        # one more node on the ring rather than the thing followers circle,
+        # so it flies its own OrbitSpec slot around fm_center exactly like
+        # fly_follower() does for everyone else -- overriding GOTO/HOLD's
+        # target-tracking below for as long as this formation holds.
+        if self.state == "flying" and cfg.FORMATION_CENTER.get(self.formation[0]) == "manual":
+            entry = cfg.FORMATIONS[self.formation[0]].get(0)
+            if isinstance(entry, cfg.OrbitSpec):
+                fwd, right, down, vfwd, vright = orbit_state(
+                    entry, time.monotonic() - self.fm_t0[0])
+                cn, ce, cd = self.fm_center[0]
+                n, e, d = cn + fwd, ce + right, cd + down
+                vn, ve = orbit_velocity_ned(0.0, vfwd, vright)  # anchor has no heading
+                ln, le, ld = n - self.tf[0], e - self.tf[1], d - self.tf[2]
+                await self.drone.offboard.set_position_velocity_ned(
+                    PositionNedYaw(ln, le, ld, 0.0), VelocityNedYaw(vn, ve, 0.0, 0.0))
+                return
+
         n, e, d = self.target
         ln, le, ld = n - self.tf[0], e - self.tf[1], d - self.tf[2]  # swarm -> local
         yaw = self.v.yaw
@@ -241,7 +293,7 @@ class LeaderCommander:
 
 
 # ============================================================ leader run loop
-async def run_leader_commands(drone, v, tf, phase, formation, fm_t0, log):
+async def run_leader_commands(drone, v, tf, phase, formation, fm_t0, fm_center, log):
     """
     Command-driven replacement for fly_leader(): waits for ARM/TAKEOFF over
     the command link, then holds/navigates per GOTO/HOLD/FORMATION until LAND
@@ -250,7 +302,7 @@ async def run_leader_commands(drone, v, tf, phase, formation, fm_t0, log):
     so landing cascades down the tree exactly the same way in both modes; the
     caller's run()/finally still does the actual PX4 offboard.stop()/land().
     """
-    commander = LeaderCommander(drone, v, tf, formation, fm_t0, log)
+    commander = LeaderCommander(drone, v, tf, formation, fm_t0, fm_center, log)
     await open_command_link(commander)
     log(f"command interface listening on 0.0.0.0:{cfg.CMD_PORT} -- waiting for ARM")
 
