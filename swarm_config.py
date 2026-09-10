@@ -119,6 +119,19 @@ SWARM = {
     4: NodeCfg(4, 2, 2, (-8.0, +8.0, -2.0), 4),
 }
 
+# Per-node cruise speed used only for the transient while a follower is
+# closing on a NEW formation offset right after a FORMATION switch -- lets
+# nodes visibly converge at different rates instead of in lockstep. A node_id
+# missing from this map falls back to V_MAX (the old, uniform behaviour).
+# Steady-state motion (orbit/ring tangential speed, leader path speed) is
+# untouched and keeps using OrbitSpec.omega / LEADER_SPEED as before.
+NODE_TRANSITION_SPEED = {
+    1: 6.0,
+    2: 10.0,
+    3: 14.0,
+    4: 18.0,
+}
+
 # ------------------------------------------------------------------- formations
 # Each formation is a { node_id: offset } map, offset in the SAME (fwd, right,
 # down) parent-body-frame convention as NodeCfg.offset above -- it is applied
