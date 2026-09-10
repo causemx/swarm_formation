@@ -18,6 +18,9 @@ socket on cfg.CMD_PORT.
     TAKEOFF args (optional): {"alt": float}                  # metres AGL
     GOTO args (one of):      {"n": float, "e": float, "d": float}   # swarm frame
                               {"lat": float, "lon": float, "alt": float}
+    VEL args:                {"vn": float, "ve": float, "vd": float,  # m/s, swarm frame
+                              "yaw": float,               # optional, degrees; default keeps current
+                              "duration": float}          # optional seconds; omitted = until stopped
     FORMATION args:          {"name": str}              # key in cfg.FORMATIONS
 
 Every ack is sent as soon as the command is validated and accepted or
@@ -39,7 +42,7 @@ import swarm_config as cfg
 from formation import clamp_xyz
 from geo import geodetic_to_ned
 
-VALID_CMDS = {"ARM", "TAKEOFF", "GOTO", "HOLD", "LAND", "FORMATION"}
+VALID_CMDS = {"ARM", "TAKEOFF", "GOTO", "VEL", "HOLD", "LAND", "FORMATION"}
 
 
 # ============================================================== wire protocol
@@ -105,6 +108,9 @@ class LeaderCommander:
         self._leg_deadline = None
         self._climb_n = self._climb_e = self._climb_yaw = self._climb_hover_d = None
         self._climb_deadline = None
+        self._vel = None          # (vn, ve, vd) while in open-loop VEL mode, else None
+        self._vel_yaw = None
+        self._vel_deadline = None  # monotonic seconds, or None = run until stopped
 
     # ---- called from CommandProtocol -----------------------------------
     async def handle(self, cmd, args):
@@ -160,15 +166,37 @@ class LeaderCommander:
             n, e, d = args["n"], args["e"], args["d"]
         else:
             return "rejected", "goto needs n/e/d or lat/lon/alt"
+        self._vel = None
         self.target = (n, e, d)
         self.navigating = True
         self._leg_deadline = time.monotonic() + cfg.LEG_TIMEOUT
         self.log(f"goto N{n:.1f} E{e:.1f} D{d:.1f}")
         return "accepted", f"navigating to N{n:.1f} E{e:.1f} D{d:.1f}"
 
+    async def _cmd_vel(self, args):
+        if self.state != "flying":
+            return "rejected", f"must be flying, not {self.state}"
+        try:
+            vn, ve, vd = float(args["vn"]), float(args["ve"]), float(args["vd"])
+        except (KeyError, TypeError, ValueError):
+            return "rejected", "vel needs vn/ve/vd"
+        duration = args.get("duration")
+        if duration is not None:
+            duration = float(duration)
+            if duration <= 0:
+                return "rejected", "duration must be positive"
+        self.navigating = False
+        self._vel = clamp_xyz(vn, ve, vd, cfg.V_MAX)
+        self._vel_yaw = float(args["yaw"]) if "yaw" in args else self.v.yaw
+        self._vel_deadline = time.monotonic() + duration if duration is not None else None
+        suffix = f" for {duration:.1f}s" if duration is not None else " until stopped"
+        self.log(f"vel N{self._vel[0]:.1f} E{self._vel[1]:.1f} D{self._vel[2]:.1f}{suffix}")
+        return "accepted", f"moving at N{self._vel[0]:.1f} E{self._vel[1]:.1f} D{self._vel[2]:.1f}{suffix}"
+
     async def _cmd_hold(self, args):
         if self.state != "flying":
             return "rejected", f"must be flying, not {self.state}"
+        self._vel = None
         self.target = self._here()
         self.navigating = False
         self.log("holding")
@@ -214,6 +242,18 @@ class LeaderCommander:
                     PositionNedYaw(self._climb_n, self._climb_e,
                                    self._climb_hover_d, self._climb_yaw))
             return
+
+        if self.state == "flying" and self._vel is not None:
+            if self._vel_deadline is not None and time.monotonic() > self._vel_deadline:
+                self.log("vel duration elapsed, holding")
+                self._vel = None
+                self.target = self._here()
+                self.navigating = False
+            else:
+                vn, ve, vd = self._vel
+                await self.drone.offboard.set_velocity_ned(
+                    VelocityNedYaw(vn, ve, vd, self._vel_yaw))
+                return
 
         if self.state not in ("armed", "flying") or self.target is None:
             return

@@ -45,7 +45,7 @@ ORIGIN_ALT = 488.0
 SETPOINT_MODE = "pos_vel"
 
 KP_POS = 0.9        # 1/s, only used when SETPOINT_MODE == "vel"
-V_MAX = 8.0         # m/s, clamp on the commanded velocity in "vel" mode
+V_MAX = 20.0         # m/s, clamp on the commanded velocity in "vel" mode
 FF_GAIN = 1.0       # 0..1, how much of the parent velocity is fed forward
 
 TAKEOFF_ALT = 5.0   # m AGL, initial climb over own home before joining formation

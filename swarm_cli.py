@@ -7,6 +7,7 @@ Requires the leader (node 0) to be running with --command-interface.
     swarm_cli.py takeoff [--alt 5]
     swarm_cli.py goto --ned N E D
     swarm_cli.py goto --latlon LAT LON ALT
+    swarm_cli.py vel VN VE VD [--yaw DEG] [--duration SEC]
     swarm_cli.py hold
     swarm_cli.py land
     swarm_cli.py formation {wedge,line-horizontal,line-vertical}
@@ -64,6 +65,14 @@ def build_args(ns, cmd):
             return {"n": n, "e": e, "d": d}
         lat, lon, alt = ns.latlon
         return {"lat": lat, "lon": lon, "alt": alt}
+    if cmd == "VEL":
+        vn, ve, vd = ns.ned
+        args = {"vn": vn, "ve": ve, "vd": vd}
+        if ns.yaw is not None:
+            args["yaw"] = ns.yaw
+        if ns.duration is not None:
+            args["duration"] = ns.duration
+        return args
     if cmd == "FORMATION":
         return {"name": ns.name}
     return {}
@@ -71,7 +80,7 @@ def build_args(ns, cmd):
 
 def make_parser():
     ap = argparse.ArgumentParser(
-        description="Send ARM/TAKEOFF/GOTO/HOLD/LAND/FORMATION commands to "
+        description="Send ARM/TAKEOFF/GOTO/VEL/HOLD/LAND/FORMATION commands to "
                      "the swarm leader's command interface (swarm_node.py "
                      "--command-interface). Run with no subcommand for an "
                      "interactive REPL.")
@@ -93,6 +102,13 @@ def make_parser():
     grp.add_argument("--latlon", type=float, nargs=3, metavar=("LAT", "LON", "ALT"),
                       help="geodetic lat/lon/alt-AMSL")
 
+    vel = sub.add_parser("vel", help="move at a constant velocity until stopped or duration elapses")
+    vel.add_argument("ned", type=float, nargs=3, metavar=("VN", "VE", "VD"),
+                      help="swarm-frame north/east/down velocity, m/s")
+    vel.add_argument("--yaw", type=float, default=None, help="degrees; default keeps current yaw")
+    vel.add_argument("--duration", type=float, default=None,
+                      help="seconds; omit to run until hold/goto/land")
+
     sub.add_parser("hold", help="hover at the current position")
     sub.add_parser("land", help="land (cascades to followers)")
 
@@ -108,6 +124,7 @@ def run_repl(host, port, timeout):
     print("  takeoff [alt]")
     print("  goto N E D")
     print("  goto --latlon LAT LON ALT")
+    print("  vel VN VE VD [duration]")
     print("  hold")
     print("  land")
     print(f"  formation {{{','.join(sorted(cfg.FORMATIONS))}}}")
@@ -124,7 +141,7 @@ def run_repl(host, port, timeout):
         cmd = parts[0].upper()
         rest = parts[1:]
 
-        if cmd not in ("ARM", "TAKEOFF", "GOTO", "HOLD", "LAND", "FORMATION"):
+        if cmd not in ("ARM", "TAKEOFF", "GOTO", "VEL", "HOLD", "LAND", "FORMATION"):
             print(f"unknown command {parts[0]!r}")
             continue
 
@@ -138,6 +155,11 @@ def run_repl(host, port, timeout):
                 else:
                     n, e, d = (float(x) for x in rest)
                     args = {"n": n, "e": e, "d": d}
+            elif cmd == "VEL":
+                vn, ve, vd = (float(x) for x in rest[:3])
+                args = {"vn": vn, "ve": ve, "vd": vd}
+                if len(rest) > 3:
+                    args["duration"] = float(rest[3])
             elif cmd == "FORMATION":
                 if not rest:
                     print("usage: formation {" + ",".join(sorted(cfg.FORMATIONS)) + "}")

@@ -27,7 +27,7 @@ adding a tier is a line in `swarm_config.SWARM`.
 | `formation.py` | frame transform, offset rotation, vector clamp |
 | `geo.py` | flat-earth geodetic ↔ NED |
 | `swarm_monitor.py` | passive listener, prints live formation error |
-| `leader_commands.py` | leader-only command channel: ARM/TAKEOFF/GOTO/HOLD/LAND, opt in with `--command-interface` |
+| `leader_commands.py` | leader-only command channel: ARM/TAKEOFF/GOTO/VEL/HOLD/LAND, opt in with `--command-interface` |
 | `swarm_cli.py` | operator CLI/REPL that sends commands to the leader over `leader_commands.py` |
 | `test_offline.py` | checks the math and the socket without PX4 |
 | `run_sitl.sh` / `run_nodes.sh` | launchers |
@@ -47,6 +47,7 @@ python3 swarm_node.py --id 4
 python3 swarm_cli.py arm
 python3 swarm_cli.py takeoff --alt 5
 python3 swarm_cli.py goto --ned 20 10 -15
+python3 swarm_cli.py vel 2 0 0 --duration 5        # open-loop nudge, re-sent every tick
 python3 swarm_cli.py land
 python3 swarm_cli.py                                # or just run the REPL
 ```
