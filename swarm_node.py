@@ -201,22 +201,14 @@ async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
         ln, le, ld = tn - tf[0], te - tf[1], td - tf[2]   # swarm -> own local
         yaw = center["yaw"]
 
-        # Each node closes on its own formation offset at its own speed
-        # (NODE_TRANSITION_SPEED), so a FORMATION switch doesn't move the
-        # whole swarm in lockstep -- clamp_xyz also gives a free taper: once
-        # the node is within its own speed's worth of metres from the
-        # target, the closing term shrinks with distance instead of
-        # overshooting at full cruise speed.
-        speed = cfg.NODE_TRANSITION_SPEED.get(node.node_id, cfg.V_MAX)
-
         if cfg.SETPOINT_MODE == "vel":
             vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * center["vn"] + dvn
             ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * center["ve"] + dve
             vd = cfg.KP_POS * (ld - v.pd) + cfg.FF_GAIN * center["vd"]
-            vn, ve, vd = clamp_xyz(vn, ve, vd, speed)
+            vn, ve, vd = clamp_xyz(vn, ve, vd, cfg.V_MAX)
             await drone.offboard.set_velocity_ned(VelocityNedYaw(vn, ve, vd, yaw))
         else:
-            cn, ce, cd = clamp_xyz(ln - v.pn, le - v.pe, ld - v.pd, speed)
+            cn, ce, cd = clamp_xyz(ln - v.pn, le - v.pe, ld - v.pd, cfg.V_MAX)
             await drone.offboard.set_position_velocity_ned(
                 PositionNedYaw(ln, le, ld, yaw),
                 VelocityNedYaw(cn + center["vn"] * cfg.FF_GAIN + dvn,

@@ -42,7 +42,7 @@ ORIGIN_ALT = 488.0
 #            position loop (MPC_XY_P / MPC_Z_P) closes the error. Robust.
 # "vel"    : explicit outer loop  v_cmd = KP_POS * err + FF_GAIN * v_parent.
 #            Gives you a knob to study string stability of the chain.
-SETPOINT_MODE = "pos_vel"
+SETPOINT_MODE = "vel"
 
 KP_POS = 0.9        # 1/s, only used when SETPOINT_MODE == "vel"
 V_MAX = 20.0         # m/s, clamp on the commanded velocity in "vel" mode
@@ -119,19 +119,6 @@ SWARM = {
     4: NodeCfg(4, 2, 2, (-8.0, +8.0, -2.0), 4),
 }
 
-# Per-node cruise speed used only for the transient while a follower is
-# closing on a NEW formation offset right after a FORMATION switch -- lets
-# nodes visibly converge at different rates instead of in lockstep. A node_id
-# missing from this map falls back to V_MAX (the old, uniform behaviour).
-# Steady-state motion (orbit/ring tangential speed, leader path speed) is
-# untouched and keeps using OrbitSpec.omega / LEADER_SPEED as before.
-NODE_TRANSITION_SPEED = {
-    1: 6.0,
-    2: 10.0,
-    3: 14.0,
-    4: 18.0,
-}
-
 # ------------------------------------------------------------------- formations
 # Each formation is a { node_id: offset } map, offset in the SAME (fwd, right,
 # down) parent-body-frame convention as NodeCfg.offset above -- it is applied
@@ -147,7 +134,7 @@ FORMATIONS = {
     # single file behind the leader: 1,2 tuck directly in behind 0, and their
     # children (3, 4) tuck in behind them in turn -- the chain composes into
     # one straight line along the leader's forward axis.
-    "line-vertical": {
+    "line_v": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, 0.0, -2.0),
         2: (-16.0, 0.0, -2.0),
@@ -156,7 +143,7 @@ FORMATIONS = {
     },
     # abreast of the leader, spread along its right axis: 1,2 sit either side
     # of 0 and 3,4 extend the line further out past 1,2.
-    "line-horizontal": {
+    "line_h": {
         0: (0.0, 0.0, 0.0),
         1: (-8.0, -8.0, -2.0),
         2: (-8.0, +8.0, -2.0),
@@ -166,7 +153,7 @@ FORMATIONS = {
     # sawtooth chain with the leader at the center low point: 1,2 sit ahead
     # and out to either side, and 3,4 continue the zigzag back down past
     # them -- so along the right axis the chain reads low(3) - high(1) -
-    # low(0) - high(2) - low(4), same alternating shape as line-horizontal
+    # low(0) - high(2) - low(4), same alternating shape as line_h
     # but with height (forward offset) zigzagging instead of a flat line.
     "zigzag": {
         0: (0.0, 0.0, 0.0),

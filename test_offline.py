@@ -167,22 +167,6 @@ def test_clamp():
     check("zero vector safe", clamp_xyz(0.0, 0.0, 0.0, 5.0) == (0.0, 0.0, 0.0))
 
 
-def test_node_transition_speed():
-    print("per-node formation-switch speed")
-    followers = [n.node_id for n in cfg.SWARM.values() if n.parent is not None]
-    check("every follower has its own transition speed",
-          all(nid in cfg.NODE_TRANSITION_SPEED for nid in followers))
-    speeds = [cfg.NODE_TRANSITION_SPEED[nid] for nid in followers]
-    check("speeds are positive", all(s > 0.0 for s in speeds))
-    check("nodes don't all share one speed", len(set(speeds)) > 1)
-    # clamp_xyz should cap a closing vector at exactly the node's own speed,
-    # not the shared V_MAX -- that's the whole point of the feature.
-    nid, speed = followers[0], cfg.NODE_TRANSITION_SPEED[followers[0]]
-    x, y, z = clamp_xyz(100.0, 0.0, 0.0, speed)
-    check("closing vector capped at the node's own speed",
-          abs(math.sqrt(x*x + y*y + z*z) - speed) < 1e-9)
-
-
 def test_topology():
     print("topology sanity")
     roots = [n for n in cfg.SWARM.values() if n.parent is None]
@@ -230,7 +214,6 @@ if __name__ == "__main__":
     test_orbit_formation()
     test_ring_formation()
     test_clamp()
-    test_node_transition_speed()
     test_topology()
     asyncio.run(test_link())
     print("\nall checks passed")

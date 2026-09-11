@@ -10,7 +10,7 @@ Requires the leader (node 0) to be running with --command-interface.
     swarm_cli.py vel VN VE VD [--yaw DEG] [--duration SEC]
     swarm_cli.py hold
     swarm_cli.py land
-    swarm_cli.py formation {wedge,line-horizontal,line-vertical}
+    swarm_cli.py formation {wedge,line_h,line_v}
     swarm_cli.py                      # REPL, one command per line, Ctrl-D to exit
 
 Sends one JSON command datagram to the leader's cfg.CMD_PORT and waits up to
