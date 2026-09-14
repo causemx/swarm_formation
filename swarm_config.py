@@ -53,6 +53,17 @@ ARRIVAL_R = 2.0     # m, leader waypoint acceptance radius
 LEADER_SPEED = 4.0  # m/s, feed-forward speed along the leader path
 LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
 
+# --------------------------------------------------------------------- ORCA
+# Decentralized ORCA (Python-RVO2) collision avoidance for SETPOINT_MODE ==
+# "vel" followers only. Each node re-solves a fresh, local RVO2 simulator
+# every publish tick from its own position + all_peers(); see orca.py.
+ORCA_RADIUS = 3.0            # m, per-agent collision radius (own + every peer)
+ORCA_NEIGHBOR_DIST = 15.0    # m, horizontal range beyond which a peer is ignored
+ORCA_MAX_NEIGHBORS = 8       # cap on peers considered per solve (>= swarm size)
+ORCA_TIME_HORIZON = 2.0      # s, how far ahead ORCA plans to avoid other agents
+ORCA_TIME_HORIZON_OBST = 1.0 # s, static-obstacle horizon; unused (no obstacles), required by the API
+ORCA_MAX_SPEED = V_MAX       # m/s, hard cap fed into RVO2; separate knob from V_MAX
+
 
 @dataclass
 class OrbitSpec:
@@ -113,10 +124,10 @@ def root_of(node_id):
 # rotates with the parent's heading.
 SWARM = {
     0: NodeCfg(0, 0, None, (0.0, 0.0, 0.0), 0),
-    1: NodeCfg(1, 1, 0, (-8.0, -8.0, -2.0), 1),
-    2: NodeCfg(2, 1, 0, (-8.0, +8.0, -2.0), 2),
-    3: NodeCfg(3, 2, 1, (-8.0, -8.0, -2.0), 3),
-    4: NodeCfg(4, 2, 2, (-8.0, +8.0, -2.0), 4),
+    1: NodeCfg(1, 1, 0, (-16.0, -16.0, -4.0), 1),
+    2: NodeCfg(2, 1, 0, (-16.0, +16.0, -4.0), 2),
+    3: NodeCfg(3, 2, 1, (-16.0, -16.0, -4.0), 3),
+    4: NodeCfg(4, 2, 2, (-16.0, +16.0, -4.0), 4),
 }
 
 # ------------------------------------------------------------------- formations
@@ -136,19 +147,19 @@ FORMATIONS = {
     # one straight line along the leader's forward axis.
     "line_v": {
         0: (0.0, 0.0, 0.0),
-        1: (-8.0, 0.0, -2.0),
-        2: (-16.0, 0.0, -2.0),
-        3: (-16.0, 0.0, 0.0),
-        4: (-16.0, 0.0, 0.0),
+        1: (-16.0, 0.0, -4.0),
+        2: (-32.0, 0.0, -4.0),
+        3: (-32.0, 0.0, 0.0),
+        4: (-32.0, 0.0, 0.0),
     },
     # abreast of the leader, spread along its right axis: 1,2 sit either side
     # of 0 and 3,4 extend the line further out past 1,2.
     "line_h": {
         0: (0.0, 0.0, 0.0),
-        1: (-8.0, -8.0, -2.0),
-        2: (-8.0, +8.0, -2.0),
-        3: (0.0, -8.0, 0.0),
-        4: (0.0, +8.0, 0.0),
+        1: (-16.0, -16.0, -4.0),
+        2: (-16.0, +16.0, -4.0),
+        3: (0.0, -16.0, 0.0),
+        4: (0.0, +16.0, 0.0),
     },
     # sawtooth chain with the leader at the center low point: 1,2 sit ahead
     # and out to either side, and 3,4 continue the zigzag back down past
@@ -157,10 +168,10 @@ FORMATIONS = {
     # but with height (forward offset) zigzagging instead of a flat line.
     "zigzag": {
         0: (0.0, 0.0, 0.0),
-        1: (8.0, -8.0, -2.0),
-        2: (8.0, +8.0, -2.0),
-        3: (-8.0, -8.0, 0.0),
-        4: (-8.0, +8.0, 0.0),
+        1: (16.0, -16.0, -4.0),
+        2: (16.0, +16.0, -4.0),
+        3: (-16.0, -16.0, 0.0),
+        4: (-16.0, +16.0, 0.0),
     },
     # Orbital revolution: the leader stays put at the center and 1,2 sweep
     # around it in a circle. 3,4 use OrbitSpec entries too, but their parent
@@ -171,14 +182,14 @@ FORMATIONS = {
     # so they don't collide.
     #
     # ORBIT_OMEGA is picked so the fastest tangential speed (radius * omega)
-    # stays well under V_MAX = 8 m/s -- at radius 8 m this is 8 * 0.15 = 1.2
-    # m/s, a slow, visually clear revolution (~42 s per lap).
+    # stays well under V_MAX -- at radius 16 m this is 16 * 0.15 = 2.4 m/s,
+    # a slow, visually clear revolution (~42 s per lap).
     "orbit": {
         0: (0.0, 0.0, 0.0),
-        1: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=-2.0),
-        2: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=-2.0),
-        3: OrbitSpec(radius=8.0, omega=0.15, phase0=0.0, down=0.0),
-        4: OrbitSpec(radius=8.0, omega=0.15, phase0=math.pi, down=0.0),
+        1: OrbitSpec(radius=16.0, omega=0.15, phase0=0.0, down=-4.0),
+        2: OrbitSpec(radius=16.0, omega=0.15, phase0=math.pi, down=-4.0),
+        3: OrbitSpec(radius=16.0, omega=0.15, phase0=0.0, down=0.0),
+        4: OrbitSpec(radius=16.0, omega=0.15, phase0=math.pi, down=0.0),
     },
     # Single shared ring: unlike "orbit", every follower circles the SAME
     # center (the leader) at the SAME radius and angular velocity, evenly
@@ -189,16 +200,16 @@ FORMATIONS = {
     # fly_follower() looks these entries' center up via FORMATION_CENTER
     # below instead of the node's immediate SWARM parent.
     #
-    # radius 10 m (vs. 8 m for "orbit", just to look visually distinct);
-    # omega unchanged at 0.15 rad/s -> 1.5 m/s tangential, still well under
+    # radius 20 m (vs. 16 m for "orbit", just to look visually distinct);
+    # omega unchanged at 0.15 rad/s -> 3.0 m/s tangential, still well under
     # V_MAX. phase0 = 2*pi*i/4 for the 4 followers spaces them 90 degrees
     # apart around the circle.
     "ring": {
         0: (0.0, 0.0, 0.0),
-        1: OrbitSpec(radius=10.0, omega=0.15, phase0=0.0, down=-3.0),
-        2: OrbitSpec(radius=10.0, omega=0.15, phase0=math.pi / 2, down=-3.0),
-        3: OrbitSpec(radius=10.0, omega=0.15, phase0=math.pi, down=-3.0),
-        4: OrbitSpec(radius=10.0, omega=0.15, phase0=3 * math.pi / 2, down=-3.0),
+        1: OrbitSpec(radius=20.0, omega=0.15, phase0=0.0, down=-6.0),
+        2: OrbitSpec(radius=20.0, omega=0.15, phase0=math.pi / 2, down=-6.0),
+        3: OrbitSpec(radius=20.0, omega=0.15, phase0=math.pi, down=-6.0),
+        4: OrbitSpec(radius=20.0, omega=0.15, phase0=3 * math.pi / 2, down=-6.0),
     },
 }
 DEFAULT_FORMATION = "wedge"

@@ -15,6 +15,7 @@ import math
 import swarm_config as cfg
 from formation import clamp_xyz, formation_target, local_to_swarm_offset, orbit_state
 from geo import geodetic_to_ned, ned_to_geodetic
+from orca import orca_velocity
 from swarm_link import open_link
 
 
@@ -167,6 +168,48 @@ def test_clamp():
     check("zero vector safe", clamp_xyz(0.0, 0.0, 0.0, 5.0) == (0.0, 0.0, 0.0))
 
 
+def test_orca_no_neighbors():
+    print("ORCA: lone agent keeps its preferred velocity")
+    vn, ve = orca_velocity((0.0, 0.0), (3.0, 4.0), {}, self_id=0)
+    check("no neighbors -> velocity unchanged",
+          abs(vn - 3.0) < 1e-6 and abs(ve - 4.0) < 1e-6)
+
+
+def test_orca_self_excluded_from_peers():
+    print("ORCA: an entry keyed by self_id in the peer dict is ignored")
+    peers = {0: {"n": 0.0, "e": 0.0, "vn": 0.0, "ve": 0.0}}
+    vn, ve = orca_velocity((0.0, 0.0), (3.0, 4.0), peers, self_id=0)
+    check("self-keyed peer entry does not perturb the result",
+          abs(vn - 3.0) < 1e-6 and abs(ve - 4.0) < 1e-6)
+
+
+def test_orca_head_on_deflection_is_mutual():
+    print("ORCA: two agents converging head-on are both deflected")
+    # Agent A at origin heading east; agent B 6 m east heading west -- a
+    # direct collision course, well inside 2*ORCA_RADIUS if neither reacts.
+    a_pos, a_pref = (0.0, 0.0), (0.0, 2.0)     # (n, e) pref vel: pure east
+    b_pos, b_pref = (0.0, 6.0), (0.0, -2.0)    # pure west
+
+    peers_for_a = {1: {"n": b_pos[0], "e": b_pos[1], "vn": b_pref[0], "ve": b_pref[1]}}
+    peers_for_b = {0: {"n": a_pos[0], "e": a_pos[1], "vn": a_pref[0], "ve": a_pref[1]}}
+
+    a_vn, a_ve = orca_velocity(a_pos, a_pref, peers_for_a, self_id=0)
+    b_vn, b_ve = orca_velocity(b_pos, b_pref, peers_for_b, self_id=1)
+
+    check("A deflected off its straight-line preferred velocity",
+          abs(a_vn) > 1e-3 or abs(a_ve - 2.0) > 1e-3)
+    check("B deflected off its straight-line preferred velocity",
+          abs(b_vn) > 1e-3 or abs(b_ve + 2.0) > 1e-3)
+    # A and B are exactly collinear with their own closing velocity, so the
+    # symmetric ORCA solution here is a speed reversal along that shared
+    # axis rather than a lateral swerve -- what matters is that both share
+    # the avoidance burden about equally, not that one yields entirely.
+    a_deflection = math.hypot(a_vn - a_pref[0], a_ve - a_pref[1])
+    b_deflection = math.hypot(b_vn - b_pref[0], b_ve - b_pref[1])
+    check("A and B share the avoidance burden about equally (reciprocal, not unilateral)",
+          abs(a_deflection - b_deflection) < 0.5)
+
+
 def test_topology():
     print("topology sanity")
     roots = [n for n in cfg.SWARM.values() if n.parent is None]
@@ -214,6 +257,9 @@ if __name__ == "__main__":
     test_orbit_formation()
     test_ring_formation()
     test_clamp()
+    test_orca_no_neighbors()
+    test_orca_self_excluded_from_peers()
+    test_orca_head_on_deflection_is_mutual()
     test_topology()
     asyncio.run(test_link())
     print("\nall checks passed")

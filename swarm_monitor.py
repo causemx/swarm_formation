@@ -7,6 +7,7 @@ and prints what everyone is saying plus the live formation error.
 """
 
 import asyncio
+import itertools
 import math
 
 import swarm_config as cfg
@@ -37,9 +38,20 @@ async def main():
                 f" {math.hypot(p['vn'], p['ve']):6.2f}"
                 f"  {err}")
 
+        positions = {nid: (p["n"], p["e"]) for nid, p in peers.items()}
+        if len(positions) >= 2:
+            (a, b), min_dist = min(
+                ((pair, math.dist(positions[pair[0]], positions[pair[1]]))
+                 for pair in itertools.combinations(positions, 2)),
+                key=lambda x: x[1])
+            sep_line = f"min pairwise separation: {min_dist:6.2f} m  (nodes {a},{b})"
+        else:
+            sep_line = "min pairwise separation: n/a (<2 peers)"
+
         print("\033[2J\033[H", end="")
         print(" id lvl state       north     east     down     yaw   speed   f_err")
         print("\n".join(rows) if rows else "  (nothing on the wire)")
+        print(sep_line)
         await asyncio.sleep(0.5)
 
 

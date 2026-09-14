@@ -27,6 +27,7 @@ import swarm_config as cfg
 from formation import (clamp_xyz, formation_target, local_to_swarm_offset,
                        orbit_state, orbit_velocity_ned)
 from leader_commands import run_leader_commands
+from orca import orca_velocity
 from swarm_link import open_link
 
 
@@ -202,9 +203,17 @@ async def fly_follower(drone, v, link, node, tf, phase, formation, fm_t0, log):
         yaw = center["yaw"]
 
         if cfg.SETPOINT_MODE == "vel":
-            vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * center["vn"] + dvn
-            ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * center["ve"] + dve
+            pref_vn = cfg.KP_POS * (ln - v.pn) + cfg.FF_GAIN * center["vn"] + dvn
+            pref_ve = cfg.KP_POS * (le - v.pe) + cfg.FF_GAIN * center["ve"] + dve
             vd = cfg.KP_POS * (ld - v.pd) + cfg.FF_GAIN * center["vd"]
+
+            # ORCA replaces the horizontal (n, e) component with a locally
+            # collision-free velocity; self_pos must be swarm-frame to match
+            # the units peers broadcast in. vd is untouched -- RVO2 is 2D.
+            neighbors = link.all_peers(max_age=cfg.PEER_TIMEOUT)
+            self_pos = (v.pn + tf[0], v.pe + tf[1])
+            vn, ve = orca_velocity(self_pos, (pref_vn, pref_ve), neighbors, node.node_id)
+
             vn, ve, vd = clamp_xyz(vn, ve, vd, cfg.V_MAX)
             await drone.offboard.set_velocity_ned(VelocityNedYaw(vn, ve, vd, yaw))
         else:
