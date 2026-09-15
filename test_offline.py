@@ -158,6 +158,41 @@ def test_ring_formation():
                   abs(math.dist(pt[a], pt[b]) - d0) < 1e-9)
 
 
+def test_ring_static_formation():
+    print("static ring formation geometry")
+    leader = {"n": 0.0, "e": 0.0, "d": -20.0, "yaw": 0.0}
+
+    def positions(yaw):
+        leader["yaw"] = yaw
+        pts = {0: (leader["n"], leader["e"], leader["d"])}
+        for nid in (1, 2, 3, 4):
+            pts[nid] = formation_target(leader, cfg.FORMATIONS["ring_static"][nid])
+        return pts
+
+    p = positions(0.0)
+    ring_order = [0, 1, 2, 3, 4]
+    edges = [math.dist(p[ring_order[i]], p[ring_order[(i + 1) % 5]]) for i in range(5)]
+    # config offsets are rounded to 4 decimal places, so exact equality is
+    # only good to ~1e-4 m, not floating-point precision
+    check("all 5 ring edges (including both to the leader) equal length",
+          max(edges) - min(edges) < 1e-3)
+
+    diagonals = [math.dist(p[0], p[2]), math.dist(p[0], p[3])]
+    check("both long diagonals from the leader are equal (regular pentagon, not just equal edges)",
+          abs(diagonals[0] - diagonals[1]) < 1e-3)
+    check("diagonals are longer than edges (a genuine pentagon, not degenerate)",
+          min(diagonals) > max(edges))
+
+    pair_dist_0 = {(a, b): math.dist(p[a], p[b])
+                   for i, a in enumerate(ring_order) for b in ring_order[i + 1:]}
+    for yaw in (30.0, 90.0, 200.0):
+        pt = positions(yaw)
+        for pair, d0 in pair_dist_0.items():
+            a, b = pair
+            check(f"pair {pair} distance invariant under leader yaw",
+                  abs(math.dist(pt[a], pt[b]) - d0) < 1e-9)
+
+
 def test_clamp():
     print("velocity clamp")
     x, y, z = clamp_xyz(30.0, 40.0, 0.0, 5.0)
@@ -256,6 +291,7 @@ if __name__ == "__main__":
     test_formation_rotation()
     test_orbit_formation()
     test_ring_formation()
+    test_ring_static_formation()
     test_clamp()
     test_orca_no_neighbors()
     test_orca_self_excluded_from_peers()

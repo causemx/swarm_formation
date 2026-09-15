@@ -57,8 +57,8 @@ LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
 # Decentralized ORCA (Python-RVO2) collision avoidance for SETPOINT_MODE ==
 # "vel" followers only. Each node re-solves a fresh, local RVO2 simulator
 # every publish tick from its own position + all_peers(); see orca.py.
-ORCA_RADIUS = 3.0            # m, per-agent collision radius (own + every peer)
-ORCA_NEIGHBOR_DIST = 15.0    # m, horizontal range beyond which a peer is ignored
+ORCA_RADIUS = 3.5            # m, per-agent collision radius (own + every peer)
+ORCA_NEIGHBOR_DIST = 20.0    # m, horizontal range beyond which a peer is ignored
 ORCA_MAX_NEIGHBORS = 8       # cap on peers considered per solve (>= swarm size)
 ORCA_TIME_HORIZON = 2.0      # s, how far ahead ORCA plans to avoid other agents
 ORCA_TIME_HORIZON_OBST = 1.0 # s, static-obstacle horizon; unused (no obstacles), required by the API
@@ -211,6 +211,24 @@ FORMATIONS = {
         3: OrbitSpec(radius=20.0, omega=0.15, phase0=math.pi, down=-6.0),
         4: OrbitSpec(radius=20.0, omega=0.15, phase0=3 * math.pi / 2, down=-6.0),
     },
+    # Static ring: unlike "ring", the leader is not the center -- all 5
+    # nodes (leader + 4 followers) sit as evenly-spaced vertices of one
+    # regular pentagon, 72 degrees apart, holding that shape with no
+    # rotation. down = 0.0 for every follower, same altitude as the leader,
+    # so it's a genuine flat ring (a nonzero down offset here would make
+    # leader-to-follower edges longer than follower-to-follower edges,
+    # breaking the regular-pentagon property). Center is a fixed point R
+    # ahead of the leader; like "ring", every follower's offset is measured
+    # from the leader (root) directly via FORMATION_CENTER below, not the
+    # immediate SWARM parent, so the pentagon is exact regardless of tree
+    # depth.
+    "ring_static": {
+        0: (0.0, 0.0, 0.0),
+        1: (13.8197, -19.0211, 0.0),
+        2: (36.1803, -11.7557, 0.0),
+        3: (36.1803, 11.7557, 0.0),
+        4: (13.8197, 19.0211, 0.0),
+    },
 }
 DEFAULT_FORMATION = "wedge"
 
@@ -222,6 +240,7 @@ DEFAULT_FORMATION = "wedge"
 # parent. See fly_follower()'s use of root_of() for how this is applied.
 FORMATION_CENTER = {
     "ring": "root",
+    "ring_static": "root",
 }
 
 # Leader path, in the common swarm frame: (north, east, down) [m].
