@@ -11,6 +11,7 @@ the formation offset.
 
 import asyncio
 import math
+import time
 
 import swarm_config as cfg
 from formation import clamp_xyz, formation_target, local_to_swarm_offset, orbit_state
@@ -245,6 +246,43 @@ def test_orca_head_on_deflection_is_mutual():
           abs(a_deflection - b_deflection) < 0.5)
 
 
+def test_orca_dead_reckons_stale_peer():
+    print("ORCA: a fast peer's stale cached position is projected forward by its age")
+    # Self at the origin, heading east at 6 m/s -- inside V_MAX, a plausible
+    # follower speed. Peer's cached position is 26 m east, just outside
+    # ORCA_NEIGHBOR_DIST (20 m), heading west at 20 m/s (near ORCA_MAX_SPEED)
+    # -- exactly the kind of fast, converging neighbor a "goto" leg produces,
+    # as opposed to the near-zero relative velocities of steady formation
+    # holding where staleness never accrues enough drift to matter.
+    self_pos, self_pref = (0.0, 0.0), (0.0, 6.0)
+    peer_n, peer_e = 0.0, 26.0
+    peer_vn, peer_ve = 0.0, -20.0
+
+    fresh_peers = {1: {"n": peer_n, "e": peer_e, "vn": peer_vn, "ve": peer_ve,
+                        "rx_t": time.monotonic()}}
+    vn, ve = orca_velocity(self_pos, self_pref, fresh_peers, self_id=0)
+    check("peer at its cached (fresh) position is beyond neighbor_dist -- no deflection",
+          abs(vn) < 1e-6 and abs(ve - 6.0) < 1e-6)
+
+    # Same cached snapshot, but stamped as received 0.4 s ago. True position
+    # by now is (0, 26 - 20*0.4) = (0, 18): inside neighbor_dist and closing
+    # head-on well within ORCA_TIME_HORIZON. Only dead reckoning can see this
+    # -- the raw cached (n, e) is identical to the fresh case above.
+    stale_peers = {1: {"n": peer_n, "e": peer_e, "vn": peer_vn, "ve": peer_ve,
+                        "rx_t": time.monotonic() - 0.4}}
+    vn2, ve2 = orca_velocity(self_pos, self_pref, stale_peers, self_id=0)
+    check("same snapshot but stamped stale -- extrapolated position triggers deflection",
+          abs(vn2) > 1e-3 or abs(ve2 - 6.0) > 1e-3)
+
+    # A peer dict with no rx_t at all (e.g. hand-built in a test, or a future
+    # caller that doesn't track receive time) must fall back to age=0 --
+    # trusting it as-is, matching pre-dead-reckoning behaviour exactly.
+    no_rx_t_peers = {1: {"n": peer_n, "e": peer_e, "vn": peer_vn, "ve": peer_ve}}
+    vn3, ve3 = orca_velocity(self_pos, self_pref, no_rx_t_peers, self_id=0)
+    check("no rx_t field -- treated as fresh, matches the fresh-peer result",
+          abs(vn3 - vn) < 1e-9 and abs(ve3 - ve) < 1e-9)
+
+
 def test_topology():
     print("topology sanity")
     roots = [n for n in cfg.SWARM.values() if n.parent is None]
@@ -296,6 +334,7 @@ if __name__ == "__main__":
     test_orca_no_neighbors()
     test_orca_self_excluded_from_peers()
     test_orca_head_on_deflection_is_mutual()
+    test_orca_dead_reckons_stale_peer()
     test_topology()
     asyncio.run(test_link())
     print("\nall checks passed")

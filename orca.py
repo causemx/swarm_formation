@@ -12,6 +12,8 @@ agent indices would need the same rebuild-on-change bookkeeping for no real
 savings at swarm sizes this small.
 """
 
+import time
+
 import rvo2
 
 import swarm_config as cfg
@@ -30,6 +32,9 @@ def orca_velocity(self_pos, self_pref_vel, peers, self_id, *,
         frame peers' n/e are broadcast in, not a node's own local NED.
     peers: a dict as returned by SwarmLink.all_peers(), {id: {n, e, vn, ve, ...}}.
         May or may not include an entry keyed self_id; either way it's skipped.
+        An entry with an "rx_t" field (SwarmLink's local receive stamp) is
+        dead-reckoned forward by its age using its own vn/ve; entries without
+        one (e.g. hand-built peer dicts in tests) are treated as fresh.
     self_id: this node's id, so its own broadcast (if present in peers) is
         excluded rather than double-counted as a neighbor of itself.
 
@@ -41,6 +46,7 @@ def orca_velocity(self_pos, self_pref_vel, peers, self_id, *,
     a_self = sim.addAgent(tuple(self_pos))
     sim.setAgentPrefVelocity(a_self, tuple(self_pref_vel))
 
+    now = time.monotonic()
     for pid, p in peers.items():
         if pid == self_id:
             continue
@@ -48,9 +54,19 @@ def orca_velocity(self_pos, self_pref_vel, peers, self_id, *,
         # velocity passed to addAgent as that agent's prefVelocity unless
         # setAgentPrefVelocity is called on it, so this assumes each neighbor
         # intends to keep going the way it currently is.
-        sim.addAgent((p["n"], p["e"]), neighbor_dist, max_neighbors,
+        vn, ve = p.get("vn", 0.0), p.get("ve", 0.0)
+        # peers is a cache (SwarmLink.all_peers()) and can be legitimately up
+        # to PEER_TIMEOUT old -- at ORCA_MAX_SPEED that's tens of metres of
+        # drift between the cached (n, e) and the peer's real position, which
+        # is exactly the regime a "goto" leg puts neighbors in (near-zero
+        # velocity at rest never accrues enough drift to matter). rx_t is
+        # SwarmLink's local receive stamp, so dead-reckon the peer forward by
+        # its actual age instead of trusting the stale snapshot outright.
+        age = max(0.0, now - p["rx_t"]) if "rx_t" in p else 0.0
+        pn, pe = p["n"] + vn * age, p["e"] + ve * age
+        sim.addAgent((pn, pe), neighbor_dist, max_neighbors,
                      time_horizon, time_horizon_obst, radius, max_speed,
-                     (p.get("vn", 0.0), p.get("ve", 0.0)))
+                     (vn, ve))
 
     sim.doStep()
     return sim.getAgentVelocity(a_self)

@@ -57,7 +57,7 @@ LEG_TIMEOUT = 120.0  # s, give up on a leader waypoint and move to the next one
 # Decentralized ORCA (Python-RVO2) collision avoidance for SETPOINT_MODE ==
 # "vel" followers only. Each node re-solves a fresh, local RVO2 simulator
 # every publish tick from its own position + all_peers(); see orca.py.
-ORCA_RADIUS = 3.5            # m, per-agent collision radius (own + every peer)
+ORCA_RADIUS = 4.0            # m, per-agent collision radius (own + every peer)
 ORCA_NEIGHBOR_DIST = 20.0    # m, horizontal range beyond which a peer is ignored
 ORCA_MAX_NEIGHBORS = 8       # cap on peers considered per solve (>= swarm size)
 ORCA_TIME_HORIZON = 2.0      # s, how far ahead ORCA plans to avoid other agents
