@@ -1,0 +1,16 @@
+# Managed by deploy/site.yml. Deliberately not enabled at boot and never
+# restarted automatically: a follower arms and climbs as soon as it starts.
+[Unit]
+Description=Swarm node {{ node_id }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ ansible_user }}
+WorkingDirectory={{ code_dir }}
+EnvironmentFile={{ code_dir }}/swarm.env
+ExecStart={{ venv_dir }}/bin/python -u swarm_node.py --id {{ node_id }}{{ ' --command-interface' if node_id | int == 0 else '' }}
+Restart=no
+KillSignal=SIGINT
+TimeoutStopSec=30

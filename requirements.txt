@@ -1,0 +1,3 @@
+mavsdk==3.17.2
+# rvo2 (Python-RVO2, imported by orca.py) has no aarch64 wheel; deploy/site.yml
+# builds it from source. On a dev machine: see its README.

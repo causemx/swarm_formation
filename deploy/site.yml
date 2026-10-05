@@ -1,0 +1,128 @@
+# Push the swarm code to every Pi and install it as the swarm-node service.
+#
+#   cd deploy && ansible-playbook site.yml
+#
+# Installs only. It never starts the service: starting a follower arms it.
+- name: Deploy swarm node
+  hosts: swarm
+  vars:
+    code_dir: "/home/{{ ansible_user }}/swarm_formation"
+    venv_dir: "/home/{{ ansible_user }}/swarm_venv"
+    rvo2_src: "/home/{{ ansible_user }}/Python-RVO2"
+
+  tasks:
+    - name: Refuse to deploy while the node is running
+      ansible.builtin.command: systemctl is-active swarm-node
+      register: svc
+      changed_when: false
+      failed_when: svc.stdout == "active"
+
+    - name: Install system packages
+      become: true
+      ansible.builtin.apt:
+        name: [python3-venv, python3-dev, build-essential, cmake, git, rsync]
+        update_cache: true
+        cache_valid_time: 86400
+
+    - name: Allow serial access to the Pixhawk
+      become: true
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: dialout
+        append: true
+
+    - name: Enable the GPIO UART for TELEM2
+      when: px4_link == "uart"
+      become: true
+      block:
+        - name: Turn on uart0 on GPIO14/15
+          ansible.builtin.lineinfile:
+            path: /boot/firmware/config.txt
+            line: dtparam=uart0=on
+          notify: Reboot
+        - name: Remove the serial login console from the kernel cmdline
+          ansible.builtin.replace:
+            path: /boot/firmware/cmdline.txt
+            regexp: 'console=(serial0|ttyAMA0),\d+\s*'
+            replace: ''
+          notify: Reboot
+        - name: Stop a getty from grabbing the UART
+          ansible.builtin.systemd:
+            name: serial-getty@ttyAMA0.service
+            state: stopped
+            enabled: false
+          failed_when: false
+
+    - name: Sync code
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ code_dir }}/"
+        delete: true
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=venv_swarm"
+          - "--exclude=__pycache__"
+          - "--exclude=deploy"
+          - "--exclude=docs"
+          - "--exclude=swarm.env"
+
+    - name: Install Python requirements into the venv
+      ansible.builtin.pip:
+        requirements: "{{ code_dir }}/requirements.txt"
+        virtualenv: "{{ venv_dir }}"
+        virtualenv_command: python3 -m venv
+
+    - name: Check whether rvo2 is already built
+      ansible.builtin.command: "{{ venv_dir }}/bin/python -c 'import rvo2'"
+      register: rvo2_check
+      changed_when: false
+      failed_when: false
+
+    - name: Build rvo2 from source (slow, first run only)
+      when: rvo2_check.rc != 0
+      block:
+        - name: Fetch Python-RVO2
+          ansible.builtin.git:
+            repo: https://github.com/sybrenstuvel/Python-RVO2.git
+            dest: "{{ rvo2_src }}"
+            version: main
+        - name: Install Cython
+          ansible.builtin.pip:
+            name: [cython, setuptools, wheel]
+            virtualenv: "{{ venv_dir }}"
+        - name: Build and install rvo2
+          ansible.builtin.command:
+            cmd: "{{ venv_dir }}/bin/pip install --no-build-isolation ."
+            chdir: "{{ rvo2_src }}"
+
+    - name: Write per-vehicle environment
+      ansible.builtin.template:
+        src: swarm.env.j2
+        dest: "{{ code_dir }}/swarm.env"
+        mode: "0644"
+
+    - name: Install the systemd unit
+      become: true
+      ansible.builtin.template:
+        src: swarm-node.service.j2
+        dest: /etc/systemd/system/swarm-node.service
+        mode: "0644"
+
+    - name: Reload systemd (service stays stopped and disabled)
+      become: true
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Smoke test imports on the Pi
+      ansible.builtin.command:
+        cmd: "{{ venv_dir }}/bin/python -c 'import mavsdk, rvo2, swarm_config as c; print(c.BCAST_ADDR)'"
+        chdir: "{{ code_dir }}"
+      environment:
+        SWARM_BCAST: "{{ bcast_addr }}"
+      changed_when: false
+
+  handlers:
+    - name: Reboot
+      become: true
+      ansible.builtin.reboot:
+        msg: "swarm deploy: UART config changed"

@@ -6,6 +6,7 @@ swarm_node.py is generic and reads only this file.
 """
 
 import math
+import os
 from dataclasses import dataclass
 
 # --------------------------------------------------------------- communication
@@ -18,10 +19,10 @@ UDP_PORT = 45455
 # read it. This is a direct, unicast, operator<->leader channel instead.
 CMD_PORT = UDP_PORT + 1
 
-# Loopback broadcast: every SITL instance + node process runs on this machine.
-# On a real network (or several machines) use the subnet broadcast address,
-# e.g. "192.168.1.255".
-BCAST_ADDR = "127.255.255.255"
+# Subnet broadcast for the swarm LAN. For SITL on one machine use loopback
+# broadcast "127.255.255.255". SWARM_BCAST overrides it per host (set by
+# deploy/ on each Pi), so the same file works on every vehicle.
+BCAST_ADDR = os.environ.get("SWARM_BCAST", "192.168.3.255")
 
 PUBLISH_HZ = 20.0      # state broadcast + offboard setpoint rate (PX4 needs > 2 Hz)
 PEER_TIMEOUT = 1.0     # s; parent state older than this counts as "no parent"
@@ -94,6 +95,10 @@ class NodeCfg:
 
     @property
     def mavsdk_url(self) -> str:
+        # On hardware each companion computer talks to its own flight
+        # controller, e.g. SWARM_MAVLINK_URL=serial:///dev/ttyAMA0:921600.
+        if url := os.environ.get("SWARM_MAVLINK_URL"):
+            return url
         # PX4 SITL sends to 14540 + instance for offboard APIs.
         # MAVSDK-Python 1.x wants "udp://:14540" instead of "udpin://...".
         return f"udpin://0.0.0.0:{14540 + self.px4_instance}"
